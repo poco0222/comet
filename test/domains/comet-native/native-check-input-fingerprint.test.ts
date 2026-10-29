@@ -630,7 +630,19 @@ describe('Native check input gate', () => {
       const changed = await nativeCandidateInputGate(input);
       expect(changed).toEqual(expect.stringMatching(/^[a-f0-9]{64}$/u));
       expect(changed).not.toBe(candidate);
-      expect(await nativeCheckInputGate(input)).not.toBe(checked);
+      const changedInput = await nativeCheckInputGate(input);
+      expect(changedInput).toEqual(expect.stringMatching(/^[a-f0-9]{64}$/u));
+      expect(changedInput).not.toBe(checked);
+
+      const toggledSource = `${bom ? '' : '\ufeff'}export const value = 2;\n`;
+      await fs.writeFile(source, toggledSource);
+      const toggledInput = await nativeCheckInputGate(input);
+      expect(toggledInput).toEqual(expect.stringMatching(/^[a-f0-9]{64}$/u));
+      expect(toggledInput).not.toBe(changedInput);
+      expect(await nativeCandidateInputGate(input)).toEqual(
+        expect.stringMatching(/^[a-f0-9]{64}$/u),
+      );
+      expect(await fs.readFile(source)).toEqual(Buffer.from(toggledSource));
     },
   );
 

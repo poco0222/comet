@@ -22,6 +22,7 @@ All notable changes to @rpamis/comet will be documented in this file.
 
 ### Fixed
 
+- **UTF-8 BOM check receipts**: Accept successful Native checks for unchanged JavaScript source with a UTF-8 BOM while preserving the original file bytes and candidate-drift safeguards.
 - **Native environment-file verification**: Include environment and key-named files within the existing input scope in content fingerprints, so independent repositories under a non-Git workspace can complete verification and Archive. Continue rejecting unreadable or unstable inputs and stale evidence, and report failed candidate capture without mislabeling it as legacy checks ([#509](https://github.com/rpamis/comet/issues/509)).
 - **Eval scoring reliability**: Keep recovery hashes containing `429` from being mislabeled as API rate limits, and allow reasoning-based judges enough output space to return their scores.
 - **Evaluation on macOS**: Preserve simulator prompts and optional arguments when running interactive evaluations with the system Bash 3.2, so approval replies and completion checks can run without replacing the shell.

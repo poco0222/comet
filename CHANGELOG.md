@@ -2,6 +2,13 @@
 
 All notable changes to @rpamis/comet will be documented in this file.
 
+## What's Changed [0.5.2] - 2026-10-29
+
+### Fixed
+
+- **UTF-8 BOM check receipts**: Accept successful Native checks for unchanged JavaScript source with a UTF-8 BOM while preserving the original file bytes and candidate-drift safeguards.
+- **Native Shape target Spec changes**: Before Shape is confirmed, replace a previously declared target Spec with a different capability's target Spec or a formal remove entry and prepare confirmation again, instead of being forced to restore the unwanted file or delete the formal Spec. An exemption alone still cannot hide a missing declared Spec, and confirmed target Specs remain required after Shape ([#516](https://github.com/rpamis/comet/issues/516)).
+
 ## What's Changed [0.5.1] - 2026-10-23
 
 ### Changed
@@ -22,7 +29,6 @@ All notable changes to @rpamis/comet will be documented in this file.
 
 ### Fixed
 
-- **UTF-8 BOM check receipts**: Accept successful Native checks for unchanged JavaScript source with a UTF-8 BOM while preserving the original file bytes and candidate-drift safeguards.
 - **Native environment-file verification**: Include environment and key-named files within the existing input scope in content fingerprints, so independent repositories under a non-Git workspace can complete verification and Archive. Continue rejecting unreadable or unstable inputs and stale evidence, and report failed candidate capture without mislabeling it as legacy checks ([#509](https://github.com/rpamis/comet/issues/509)).
 - **Eval scoring reliability**: Keep recovery hashes containing `429` from being mislabeled as API rate limits, and allow reasoning-based judges enough output space to return their scores.
 - **Evaluation on macOS**: Preserve simulator prompts and optional arguments when running interactive evaluations with the system Bash 3.2, so approval replies and completion checks can run without replacing the shell.

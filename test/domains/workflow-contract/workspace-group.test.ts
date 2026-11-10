@@ -50,9 +50,13 @@ it('rejects equivalent Git paths for a retired member until registration is prun
   };
   await registerWorkspaceGroup(group);
   await bindWorkspaceGroupSession(group, 'session');
-  // 保留真实 Git 登记，用等价路径覆盖不同平台的路径表示。
-  await fs.writeFile(path.join(gitDir, 'gitdir'), `${member}${path.sep}.${path.sep}.git\n`);
+  // Git 登记使用正斜杠；保留等价路径，避免在 Windows 上写坏 /.git 后缀。
+  const gitMember = member.split(path.sep).join('/');
+  await fs.writeFile(path.join(gitDir, 'gitdir'), `${gitMember}/./.git\n`);
   await fs.rm(member, { recursive: true });
+  expect(runGitCommand(source, ['worktree', 'list', '--porcelain', '-z']).split('\0')).toContain(
+    `worktree ${gitMember}/.`,
+  );
   const read = () => readWorkspaceGroupSession(coordinatorRoot, 'session', async () => ['backend']);
   await expect(read()).rejects.toThrow('was reused');
 

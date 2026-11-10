@@ -628,6 +628,6 @@ Read all three repositories in one check.
     expect(unapproved.output.exitCode).toBe(64);
     expect(unapproved.output.stdout + unapproved.output.stderr).toContain('Shape');
   },
-  // Windows CI 的完整三仓流程已超过 180 秒，保留全部交付与恢复断言。
-  process.platform === 'win32' ? 600_000 : 180_000,
+  // Windows CI 到最后的会话恢复断言已用约 600 秒，保留全部交付与恢复检查。
+  process.platform === 'win32' ? 900_000 : 180_000,
 );

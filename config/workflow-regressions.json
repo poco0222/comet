@@ -11350,6 +11350,25 @@
           ]
         }
       ]
+    },
+    {
+      "id": "native-group-retired-worktree-paths",
+      "sources": ["report:2026-11-11-native-multi-repo-ci"],
+      "behavior": "Reject session recovery while a retired member still has an equivalent Git worktree registration.",
+      "coverageLevel": "runtime",
+      "reproduction": "Windows CI on 74b6cf9 allowed the generated CLI to select another task after a removed member was registered again. A real Git fixture using an equivalent dot path reproduces the same missed registration on other platforms.",
+      "expected": "Compare Git worktree roots by path identity, reject retained registrations and reused directories, fail closed when Git inspection fails, and allow recovery after the registration is pruned.",
+      "forbidden": "Treat different separators or equivalent path spelling as proof that a retired worktree registration is absent.",
+      "rootCause": "Retired-member validation compared raw Git porcelain records with a platform-native path string.",
+      "tests": [
+        {
+          "file": "test/domains/workflow-contract/workspace-group.test.ts",
+          "namePattern": "^rejects equivalent Git paths for a retired member until registration is pruned$",
+          "requiredNames": [
+            "rejects equivalent Git paths for a retired member until registration is pruned"
+          ]
+        }
+      ]
     }
   ]
 }

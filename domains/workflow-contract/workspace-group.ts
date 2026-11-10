@@ -8,6 +8,7 @@ import {
   resolveWorkspaceRuntimeLocation,
 } from '../../platform/paths/workspace-runtime.js';
 import { runGitCommand } from '../../platform/process/git.js';
+import { samePath } from '../../platform/paths/git-worktree.js';
 import { inspectProtectedProjectPath, readProtectedProjectFile } from './protected-project-path.js';
 import { atomicWriteContainedJson } from './contained-atomic-write.js';
 import { withRecoverableFileLock } from '../../platform/fs/recoverable-file-lock.js';
@@ -172,7 +173,10 @@ async function assertWorkspaceGroupMembers(
           '-z',
         ])
           .split('\0')
-          .includes(`worktree ${root}`)
+          .some(
+            (line) =>
+              line.startsWith('worktree ') && samePath(line.slice('worktree '.length), root),
+          )
       )
         throw new Error(`Retired workspace group repository was reused: ${root}`);
       continue;

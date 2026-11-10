@@ -59,6 +59,7 @@ it.each(['source', 'bundle', ...(packageRoot ? ['package'] : [])])(
       runGitCommand(root, ['init', '-b', 'main']);
       runGitCommand(root, ['config', 'user.name', 'Lifecycle Test']);
       runGitCommand(root, ['config', 'user.email', 'lifecycle@example.invalid']);
+      runGitCommand(root, ['config', 'core.autocrlf', 'false']);
       await fs.writeFile(path.join(root, 'source.txt'), 'old\n');
       await fs.writeFile(path.join(root, '.gitignore'), '.env\nnode_modules/\n');
       runGitCommand(root, ['add', 'source.txt', '.gitignore']);

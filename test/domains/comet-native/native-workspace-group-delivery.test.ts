@@ -57,6 +57,7 @@ describe('Native workspace group Git delivery', () => {
       runGitCommand(root, ['init', '-b', entry.path === 'mobile' ? 'main' : 'master']);
       runGitCommand(root, ['config', 'user.name', 'Delivery Test']);
       runGitCommand(root, ['config', 'user.email', 'delivery@example.invalid']);
+      runGitCommand(root, ['config', 'core.autocrlf', 'false']);
       await fs.writeFile(path.join(root, 'source.txt'), 'old\n');
       runGitCommand(root, ['add', 'source.txt']);
       runGitCommand(root, ['commit', '-m', 'initial']);

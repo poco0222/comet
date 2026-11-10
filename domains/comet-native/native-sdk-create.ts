@@ -181,10 +181,11 @@ export async function restoreNativeSdkChange(
         `Native change ${name} has unresolved external work; restore the original Run history and reconcile its outcome`,
       );
     }
-    assertPortableWorkspaceBindingCurrent(paths.projectRoot, {
+    await assertPortableWorkspaceBindingCurrent(paths.projectRoot, {
       isolation: state.workspace.isolation,
       changeBranch: state.workspace.change_branch,
       targetBranch: state.workspace.target_branch,
+      groupHash: state.workspace.group_hash,
     });
     const initialState = createNativePortableState({
       name,
@@ -215,7 +216,10 @@ export async function createNativeSdkChange(options: {
   return withNativeMutationLock(options.paths, `create SDK change ${options.name}`, async () => {
     if (!NAME_PATTERN.test(options.name))
       throw new Error(`Invalid Native change name: ${options.name}`);
-    assertPortableWorkspaceBindingCurrent(options.paths.projectRoot, options.workspaceBinding);
+    await assertPortableWorkspaceBindingCurrent(
+      options.paths.projectRoot,
+      options.workspaceBinding,
+    );
     const owner = await readChangeRuntimeOwner(options.paths.projectRoot, 'native', options.name);
     if (owner) throw new Error(`Native change ${options.name} already has Runtime ownership`);
     await assertNativeSdkStartAvailable({

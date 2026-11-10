@@ -1,4 +1,5 @@
 import path from 'node:path';
+import { readNativeWorkspaceGroup } from './native-workspace-group.js';
 import { readFileRaceSafe } from '../../platform/fs/race-safe-read.js';
 import { stripUtf8Bom } from '../../platform/fs/strip-bom.js';
 import { reportCometRuntimeProgress } from '../../platform/process/runtime-metrics.js';
@@ -217,12 +218,29 @@ async function projectTaskResult(
             : '按已批准的 brief、Spec 和全部验收项完成实现；需要受管检查时在结果中提交 request-checks，收到检查结果后继续 Build。',
       }
     : undefined;
+  const workspaceGroup = state.workspace.group_hash
+    ? await readNativeWorkspaceGroup(options.projectRoot)
+    : null;
   const data = {
     schema: 'comet.native.task-result.v1',
     change: options.name,
     phase: state.phase,
     status: run.status === 'completed' ? 'completed' : state.status,
-    workspace: { projectRoot: options.projectRoot },
+    workspace: {
+      projectRoot: options.projectRoot,
+      ...(workspaceGroup
+        ? {
+            coordinatorRoot: workspaceGroup.plan.coordinatorRoot,
+            planHash: workspaceGroup.plan.hash,
+            repositories: workspaceGroup.plan.repositories.map((entry) => ({
+              path: entry.path,
+              cwd: entry.worktreeRoot,
+              changeBranch: entry.changeBranch,
+              targetBranch: entry.targetBranch,
+            })),
+          }
+        : {}),
+    },
     result: {
       summary: verified?.summary ?? state.verification?.summary.text ?? summary,
       ...(state.verification

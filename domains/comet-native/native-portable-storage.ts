@@ -25,6 +25,7 @@ import {
 } from './native-paths.js';
 import type { NativeProjectPaths } from './native-types.js';
 import type { NativeWorkspaceBinding } from './native-workspace.js';
+import { readNativeWorkspaceGroup } from './native-workspace-group.js';
 
 export const NAME_PATTERN = /^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$/u;
 
@@ -66,6 +67,7 @@ export function portableWorkspace(binding?: NativeWorkspaceBinding): NativePorta
     change_branch: binding?.changeBranch ?? null,
     target_branch: binding?.targetBranch ?? null,
     finish: null,
+    ...(binding?.groupHash === undefined ? {} : { group_hash: binding.groupHash }),
   };
 }
 
@@ -85,6 +87,8 @@ export function lateBindPortableCurrentWorkspace(
   workspace: NativePortableWorkspace,
   projectRoot: string,
 ): NativePortableWorkspace | null {
+  if (workspace.group_hash)
+    throw new Error('Native Supervisor does not yet support workspace groups');
   const inspection = inspectGitWorktree(projectRoot);
   if (!inspection.isGitWorktree || inspection.currentBranch === null) return null;
   if (resolveGitRef(projectRoot, inspection.currentBranch) === null) return null;
@@ -100,11 +104,23 @@ export function lateBindPortableCurrentWorkspace(
   };
 }
 
-export function assertPortableWorkspaceBindingCurrent(
+export async function assertPortableWorkspaceBindingCurrent(
   projectRoot: string,
   binding: NativeWorkspaceBinding | undefined,
-): void {
+): Promise<void> {
   if (!binding) return;
+  const group = await readNativeWorkspaceGroup(projectRoot);
+  if (binding.groupHash !== group?.plan.hash)
+    throw new Error(
+      'Native workspace group binding is missing or differs from the task creation plan',
+    );
+  if (
+    group &&
+    (binding.isolation !== 'current' ||
+      binding.changeBranch !== null ||
+      binding.targetBranch !== null)
+  )
+    throw new Error('Native workspace group must bind its non-Git task root');
   const inspection = inspectGitWorktree(projectRoot);
   if (
     binding.changeBranch !== null &&

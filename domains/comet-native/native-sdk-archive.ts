@@ -267,6 +267,31 @@ async function archiveCandidateBinding(
   return includeGeneratedInputs ? `v2:${binding}` : binding;
 }
 
+/** Reuse Archive's original binding after its formal files have moved. */
+export async function assertNativeSdkArchivedCandidate(
+  run: Readonly<WorkflowRun>,
+  projectRoot: string,
+): Promise<void> {
+  const state = parseNativePortableState(run.state);
+  if (run.status !== 'completed' || !state.archived || !state.builder_handoff)
+    throw new Error('Native Git delivery requires a completed archived candidate');
+  const paths = await nativeProjectPaths(
+    projectRoot,
+    (run.input as { artifactRootRef: string }).artifactRootRef,
+    { readOnly: true },
+  );
+  await inspectNativeSdkArchiveFinalization({
+    paths,
+    state,
+    runId: run.runId,
+    archiveRef: (run.outputs['archive.execute']?.value as { archiveRef?: string } | undefined)
+      ?.archiveRef,
+    verificationResultHash: nativeVerificationResultHash(state),
+    allowMissingReport: run.workflow.version === '3',
+  });
+  await assertArchiveCandidate(run, projectRoot, true);
+}
+
 async function assertArchiveCandidate(
   run: Readonly<WorkflowRun>,
   projectRoot: string,

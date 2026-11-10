@@ -738,7 +738,7 @@ function checkPlansForAction(
 }
 
 /** Verifier 后加的检查与 Builder 原计划一并保留，不能只看最近一次基础检查。 */
-function allCandidateCheckPlans(run: Readonly<WorkflowRun>, before = run.actions.length) {
+export function allCandidateCheckPlans(run: Readonly<WorkflowRun>, before = run.actions.length) {
   const actions = run.actions.slice(0, before);
   const builderIndex = actions
     .map(

@@ -282,6 +282,10 @@ export async function collectNativeSdkShapeProposal(options: {
     acceptanceIds: acceptance.map(({ id }) => id),
     validation: nativeChildrenAcceptanceValidation({ ...state, acceptance }),
   });
+  if (children && state.workspace.group_hash)
+    throw new Error(
+      'Native multi-repository tasks do not support Supervisor children; keep this task in the ordinary SDK workflow',
+    );
   if ((await readNativeSupervisorShapeIntent(changeDir)) && !children) {
     throw new Error('Native Supervisor Shape requires children.yaml before confirmation');
   }

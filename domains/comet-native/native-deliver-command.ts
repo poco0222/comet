@@ -1,0 +1,249 @@
+import {
+  assertNoArguments,
+  NativeUsageError,
+  requiredPositional,
+  success,
+  takeFlag,
+  takeOption,
+  type DispatchResult,
+} from './native-cli-shared.js';
+import { inspectNativeSdkRun, resolveNativeSdkCommandRoot } from './native-runtime-ownership.js';
+import { allCandidateCheckPlans } from './native-sdk-checks.js';
+import { assertNativeSdkArchivedCandidate } from './native-sdk-archive.js';
+import {
+  readNativeWorkspaceGroup,
+  readNativeWorkspaceGroupPlan,
+} from './native-workspace-group.js';
+import {
+  cleanupNativeWorkspaceGroup,
+  readNativeWorkspaceCleanupStatus,
+} from './native-workspace-group-cleanup.js';
+import { inspectNativeSdkStatus } from './native-sdk-status.js';
+import {
+  applyNativeWorkspaceGroupDelivery,
+  inspectNativeWorkspaceGroupDelivery,
+  prepareNativeWorkspaceGroupDelivery,
+  type NativeWorkspaceGroupDelivery,
+} from './native-workspace-group-delivery.js';
+import { validateNativeWorkspaceFinishMessage } from './native-workspace-finish.js';
+import { publishNativeWorkspaceGroupSpecs } from './native-workspace-group-specs.js';
+
+/** Git delivery follows the accepted SDK Run; it never supplies workflow decisions. */
+export async function nativeDeliverCommand(
+  args: string[],
+  projectRoot: string,
+): Promise<DispatchResult> {
+  const name = requiredPositional(args, 'change name');
+  const apply = takeOption(args, '--apply');
+  const cleanup = takeFlag(args, '--cleanup');
+  const refreshDeliveryId = takeOption(args, '--refresh');
+  const commitMessage = takeOption(args, '--commit-message') ?? `feat: ${name}`;
+  assertNoArguments(args);
+  if (apply && refreshDeliveryId)
+    throw new NativeUsageError('--apply and --refresh cannot be combined');
+  if (cleanup && refreshDeliveryId)
+    throw new NativeUsageError('--cleanup and --refresh cannot be combined');
+  validateNativeWorkspaceFinishMessage(commitMessage, '--commit-message');
+  if (cleanup) {
+    const plan = await readNativeWorkspaceGroupPlan(projectRoot, name);
+    const root = plan?.projectRoot ?? projectRoot;
+    const retained = await readNativeWorkspaceCleanupStatus(root, name);
+    const status =
+      retained ?? (await inspectNativeSdkStatus({ projectRoot: root, name, details: true }));
+    let result;
+    try {
+      result = await cleanupNativeWorkspaceGroup({ root, name, apply, status });
+    } catch (error) {
+      return {
+        ...success('deliver', {
+          change: name,
+          recoveryArgs: [
+            'comet',
+            'native',
+            'deliver',
+            name,
+            '--cleanup',
+            ...(apply ? ['--apply', apply] : []),
+            '--project-root',
+            projectRoot,
+            '--json',
+          ],
+          precondition:
+            'Preserve retained files and resolve the reported worktree identity or Git lock before retrying the same command.',
+        }),
+        executionCwd: root,
+        exitCode: 73,
+        error: {
+          code: 'conflict',
+          message: error instanceof Error ? error.message : String(error),
+        },
+      };
+    }
+    return {
+      ...success('deliver', {
+        change: name,
+        cleanup: result,
+        next: apply
+          ? null
+          : {
+              commandArgs: [
+                'comet',
+                'native',
+                'deliver',
+                name,
+                '--cleanup',
+                '--apply',
+                result.planHash,
+                '--project-root',
+                projectRoot,
+                '--json',
+              ],
+              summary:
+                'Remove eligible merged worktrees; preserve local files and historical evidence.',
+            },
+      }),
+      executionCwd: root,
+    };
+  }
+  const root = await resolveNativeSdkCommandRoot(projectRoot, name);
+  const group = await readNativeWorkspaceGroup(root);
+  if (!group || group.plan.name !== name)
+    throw new NativeUsageError('deliver requires a Native SDK multi-repository task');
+  const { run, state, artifactRootRef } = await inspectNativeSdkRun(root, name, { readOnly: true });
+  if (
+    run.status !== 'completed' ||
+    !state.archived ||
+    state.verification_result !== 'pass' ||
+    !state.builder_handoff ||
+    state.children_contract_hash ||
+    !run.actions.some(
+      (action) => action.stepId === 'archive.finalize' && action.status === 'succeeded',
+    )
+  )
+    throw new NativeUsageError(
+      'Complete acceptance and Archive in the original SDK Run before Git delivery',
+    );
+  await assertNativeSdkArchivedCandidate(run, root);
+  let delivery: NativeWorkspaceGroupDelivery;
+  try {
+    delivery = apply
+      ? await applyNativeWorkspaceGroupDelivery(group, apply)
+      : await prepareNativeWorkspaceGroupDelivery({
+          group,
+          candidateId: state.builder_handoff.candidate_id,
+          commitMessage,
+          checks: allCandidateCheckPlans(run),
+          artifactRootRef,
+          refreshDeliveryId,
+          validateCandidate: () => assertNativeSdkArchivedCandidate(run, root),
+        });
+  } catch (error) {
+    const saved = await inspectNativeWorkspaceGroupDelivery(group).catch(() => null);
+    const prefix = ['comet', 'native', 'deliver', name];
+    const suffix = ['--project-root', root, '--json'];
+    return {
+      ...success('deliver', {
+        change: name,
+        delivery: saved,
+        diagnosticArgs: ['comet', 'native', 'status', name, '--details', ...suffix],
+        recoveryArgs: [
+          ...prefix,
+          ...(apply
+            ? ['--apply', apply]
+            : [
+                '--commit-message',
+                commitMessage,
+                ...(refreshDeliveryId ? ['--refresh', refreshDeliveryId] : []),
+              ]),
+          ...suffix,
+        ],
+        refresh:
+          saved && saved.status !== 'merged'
+            ? {
+                commandArgs: [
+                  ...prefix,
+                  '--refresh',
+                  saved.id,
+                  '--commit-message',
+                  saved.commitMessage,
+                  ...suffix,
+                ],
+                preconditions: [
+                  'Keep the accepted task candidate unchanged.',
+                  'Resolve dirty target work and confirm any recorded check processes have stopped.',
+                  'A new integration round reruns its checks and preserves the old worktrees.',
+                ],
+              }
+            : null,
+      }),
+      executionCwd: root,
+      exitCode: 73,
+      error: { code: 'conflict', message: error instanceof Error ? error.message : String(error) },
+    };
+  }
+  if (delivery.status === 'merged') {
+    try {
+      await publishNativeWorkspaceGroupSpecs({
+        group,
+        artifactRootRef,
+        specChanges: state.spec_changes,
+        deliveryId: delivery.id,
+      });
+    } catch (error) {
+      const message = `Git targets are merged; shared Specs publication is blocked. ${error instanceof Error ? error.message : String(error)}`;
+      return {
+        ...success('deliver', {
+          change: name,
+          delivery,
+          specs: { status: 'blocked' },
+          recoveryArgs: [
+            'comet',
+            'native',
+            'deliver',
+            name,
+            '--apply',
+            delivery.planHash!,
+            '--project-root',
+            root,
+            '--json',
+          ],
+        }),
+        executionCwd: root,
+        exitCode: 73,
+        error: { code: 'conflict', message },
+      };
+    }
+  }
+  return {
+    ...success(
+      'deliver',
+      {
+        change: name,
+        runId: run.runId,
+        delivery,
+        specs: { status: delivery.status === 'merged' ? 'published' : 'pending' },
+        next:
+          delivery.status === 'merged'
+            ? null
+            : {
+                commandArgs: [
+                  'comet',
+                  'native',
+                  'deliver',
+                  name,
+                  '--apply',
+                  delivery.planHash!,
+                  '--project-root',
+                  root,
+                  '--json',
+                ],
+                summary: 'Apply the verified integration commits to their local target branches.',
+              },
+      },
+      delivery.status === 'merged'
+        ? `Merged ${name} into all local target branches; task and integration worktrees are retained.\n`
+        : `Prepared and checked ${name}; target branches have not been updated.\n`,
+    ),
+    executionCwd: root,
+  };
+}

@@ -1,4 +1,8 @@
 import { inspectNativeChildren } from './native-children.js';
+import {
+  bindWorkspaceGroupSession,
+  readWorkspaceGroup,
+} from '../workflow-contract/workspace-group.js';
 import { captureApprovedShapeOriginals } from './native-shape-review-evidence.js';
 import type { NativeWorkspaceFinish } from './native-workspace.js';
 import {
@@ -71,7 +75,10 @@ import {
   readSdkChangeOwner,
 } from '../workflow-contract/change-runtime-owner.js';
 import { readProjectConfig } from './native-config.js';
-import { resolveNativeChangeRuntimeOwner } from './native-runtime-ownership.js';
+import {
+  resolveNativeChangeRuntimeOwner,
+  resolveNativeSdkCommandRoot,
+} from './native-runtime-ownership.js';
 import { advanceNativeSdkChange } from './native-sdk-next.js';
 import { advanceNativeSdkTask } from './native-sdk-task-command.js';
 
@@ -188,6 +195,12 @@ export async function nativeNextCommand(
   projectRoot: string,
 ): Promise<DispatchResult> {
   const name = requiredPositional(args, 'change name');
+  const commandRoot = await resolveNativeSdkCommandRoot(projectRoot, name);
+  if (commandRoot !== projectRoot)
+    return {
+      ...(await nativeNextCommand([name, ...args], commandRoot)),
+      executionCwd: commandRoot,
+    };
   const resultFile = takeOption(args, '--result');
   const sessionId = takeOption(args, '--session');
   const actionId = takeOption(args, '--action');
@@ -309,6 +322,8 @@ export async function nativeNextCommand(
         throw new NativeUsageError(
           '任务领取与结果回报需要 --session，并与原用户决定、Compat 或修订参数分开调用。',
         );
+      const group = await readWorkspaceGroup(projectRoot);
+      if (group) await bindWorkspaceGroupSession(group, sessionId);
       return advanceNativeSdkTask({
         projectRoot,
         name,

@@ -40,6 +40,7 @@ export interface NativePortableWorkspace {
   isolation: 'current' | 'branch' | 'worktree';
   change_branch: string | null;
   target_branch: string | null;
+  group_hash?: string;
   finish: 'merge' | 'push' | 'pull-request' | 'keep' | null;
 }
 

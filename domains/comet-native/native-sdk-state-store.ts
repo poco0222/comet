@@ -412,10 +412,11 @@ export function createNativeSdkStateStore(
       throw new Error(`Native portable Run checkpoint for ${runId} does not match its state`);
     }
     if (!options.allowBranchRebind)
-      assertPortableWorkspaceBindingCurrent(projectRoot, {
+      await assertPortableWorkspaceBindingCurrent(projectRoot, {
         isolation: state.workspace.isolation,
         changeBranch: state.workspace.change_branch,
         targetBranch: state.workspace.target_branch,
+        groupHash: state.workspace.group_hash,
       });
     assertSupervisorWorkspacesAvailable(saved, state, projectRoot);
     const hasSourceRevision =
@@ -784,10 +785,11 @@ export function createNativeSdkStateStore(
       }
       const binding = state.workspace;
       try {
-        assertPortableWorkspaceBindingCurrent(projectRoot, {
+        await assertPortableWorkspaceBindingCurrent(projectRoot, {
           isolation: binding.isolation,
           changeBranch: binding.change_branch,
           targetBranch: binding.target_branch,
+          groupHash: binding.group_hash,
         });
       } catch (error) {
         const previous = await store.read(runId);

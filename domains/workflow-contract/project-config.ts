@@ -16,6 +16,7 @@ import type {
   WorkflowNativeProjectConfig,
   WorkflowNativeSnapshotConfig,
   WorkflowProjectConfig,
+  WorkflowRepositoryConfig,
 } from './types.js';
 
 export type ProjectConfigCommentLanguage = 'en' | 'zh-CN';
@@ -1005,6 +1006,42 @@ function normalizeAmbientResume(value: unknown): boolean {
   return resolved;
 }
 
+export function normalizeWorkflowRepositories(
+  value: unknown,
+): WorkflowRepositoryConfig[] | undefined {
+  if (value === undefined) return undefined;
+  if (!Array.isArray(value) || value.length === 0)
+    throw new Error('repositories must be a non-empty array');
+  const repositories: WorkflowRepositoryConfig[] = [];
+  for (const entry of value) {
+    const item = projectConfigRecord(entry, 'repositories entry');
+    if (Object.keys(item).some((key) => key !== 'path' && key !== 'target_branch'))
+      throw new Error('repositories entries accept only path and target_branch');
+    const ref = normalizeWorkflowRelativePath(item.path, 'repositories.path');
+    if (ref.split('/').some((part) => part.startsWith('.')))
+      throw new Error(`repositories.path conflicts with Comet task files: ${ref}`);
+    if (
+      repositories.some(
+        (other) =>
+          other.path === ref ||
+          other.path.startsWith(`${ref}/`) ||
+          ref.startsWith(`${other.path}/`),
+      )
+    )
+      throw new Error(`repositories paths overlap: ${ref}`);
+    if (
+      item.target_branch !== undefined &&
+      (typeof item.target_branch !== 'string' || !item.target_branch.trim())
+    )
+      throw new Error('repositories.target_branch must be a non-empty branch name');
+    repositories.push({
+      path: ref,
+      ...(item.target_branch === undefined ? {} : { target_branch: item.target_branch as string }),
+    });
+  }
+  return repositories;
+}
+
 function normalizeWorkflowProjectConfig(
   root: Record<string, unknown>,
   hook: WorkflowHookProjectConfig | undefined,
@@ -1044,12 +1081,25 @@ function normalizeWorkflowProjectConfig(
   if (workflows.includes('native') && !native) {
     throw new Error('native must be a mapping');
   }
+  const repositories = normalizeWorkflowRepositories(root.repositories);
+  if (
+    native &&
+    repositories?.some(
+      (entry) =>
+        entry.path === native.artifact_root ||
+        entry.path.startsWith(`${native.artifact_root}/`) ||
+        native.artifact_root.startsWith(`${entry.path}/`),
+    )
+  ) {
+    throw new Error('repositories paths must not overlap native.artifact_root');
+  }
   return {
     schema: 'comet.project.v1',
     default_workflow: root.default_workflow,
     workflows,
     ambient_resume: ambientResume,
     change_walkthrough: normalizeChangeWalkthrough(root.change_walkthrough),
+    ...(repositories === undefined ? {} : { repositories }),
     ...(hook ? { hook } : {}),
     memory,
     knowledge,
@@ -1164,6 +1214,9 @@ export function workflowProjectConfigManagedValue(
     workflows: config.workflows ?? [config.default_workflow],
     ambient_resume: config.ambient_resume,
     change_walkthrough: config.change_walkthrough ?? true,
+    ...(config.repositories === undefined
+      ? {}
+      : { repositories: normalizeWorkflowRepositories(config.repositories) }),
     memory: config.memory ?? { ...DEFAULT_WORKFLOW_MEMORY_PROJECT_CONFIG },
     knowledge: {
       provider: knowledge.provider,
@@ -1274,6 +1327,8 @@ export function mergeWorkflowProjectConfigDocument(
     ambient_resume: validated.ambient_resume,
     change_walkthrough: validated.change_walkthrough ?? true,
   };
+  if (validated.repositories) output.repositories = validated.repositories;
+  else delete output.repositories;
   if (validated.hook) {
     output.hook = {
       ...optionalRecord(existing.hook),
@@ -2443,6 +2498,20 @@ function managedWorkflowConfigFields(source) {
   const memory = normalizeWorkflowMemoryProjectConfig(root.memory);
   const knowledge = normalizeWorkflowKnowledgeProjectConfig(root.knowledge);
 
+  const repositories = [];
+  if (root.repositories !== undefined) {
+    if (!Array.isArray(root.repositories) || root.repositories.length === 0) throw new Error('repositories must be a non-empty array');
+    for (const entry of root.repositories) {
+      const item = workflowConfigRecord(entry, 'repositories entry');
+      if (Object.keys(item).some((key) => key !== 'path' && key !== 'target_branch')) throw new Error('repositories entries accept only path and target_branch');
+      const ref = workflowProjectRelativeSegments(item.path, 'repositories.path').join('/');
+      if (ref.split('/').some((part) => part.startsWith('.'))) throw new Error('repositories.path conflicts with Comet task files: ' + ref);
+      if (repositories.some((other) => other === ref || other.startsWith(ref + '/') || ref.startsWith(other + '/'))) throw new Error('repositories paths overlap: ' + ref);
+      if (item.target_branch !== undefined && (typeof item.target_branch !== 'string' || !item.target_branch.trim())) throw new Error('repositories.target_branch must be a non-empty branch name');
+      repositories.push(ref);
+    }
+  }
+
   let nativeArtifactRoot = null;
   if (root.native !== undefined) {
     const native = workflowConfigRecord(root.native, 'native');
@@ -2450,6 +2519,7 @@ function managedWorkflowConfigFields(source) {
       throw new Error('native.artifact_root must be a string');
     }
     nativeArtifactRoot = normalizeWorkflowArtifactRoot(native.artifact_root);
+    if (repositories.some((ref) => ref === nativeArtifactRoot || ref.startsWith(nativeArtifactRoot + '/') || nativeArtifactRoot.startsWith(ref + '/'))) throw new Error('repositories paths must not overlap native.artifact_root');
     workflowConfigLanguage(native.language, 'en', 'native.language');
     const clarificationMode = native.clarification_mode ?? 'batch';
     if (clarificationMode !== 'sequential' && clarificationMode !== 'batch') {

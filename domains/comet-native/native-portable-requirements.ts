@@ -402,7 +402,12 @@ export async function createNativePortableChange(options: {
       ) {
         await writeProjectConfig(options.paths.projectRoot, options.initialProjectConfig);
       }
-      assertPortableWorkspaceBindingCurrent(options.paths.projectRoot, options.workspaceBinding);
+      if (options.workspaceBinding?.groupHash)
+        throw new Error('Native workspace groups require the SDK runtime');
+      await assertPortableWorkspaceBindingCurrent(
+        options.paths.projectRoot,
+        options.workspaceBinding,
+      );
       const activeChanges = (await listActiveNativeChangesOwnedByWorkspace(options.paths)).filter(
         (name) => name !== options.name,
       );

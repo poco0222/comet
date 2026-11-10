@@ -9,6 +9,17 @@ import path from 'path';
 import { listGitWorktreeRoots } from '../../platform/paths/git-worktree.js';
 import type { CometHookRequest } from './hook-types.js';
 import { readHookCurrentSelection } from '../workflow-contract/current-selection.js';
+import {
+  bindWorkspaceGroupSession,
+  findWorkspaceGroupRoot,
+  findWorkspaceGroupSourceCoordinator,
+  findWorkspaceGroupIntegrationRoot,
+  readWorkspaceGroupIntegration,
+  listWorkspaceGroupIntegrations,
+  listWorkspaceGroups,
+  readWorkspaceGroup,
+  readWorkspaceGroupSession,
+} from '../workflow-contract/workspace-group.js';
 
 function samePath(left: string, right: string): boolean {
   const normalizedLeft = path.resolve(left);
@@ -57,6 +68,85 @@ export async function resolveCometHookProjectRoot(
   request: CometHookRequest,
 ): Promise<string> {
   const explicitRoot = path.resolve(explicitProjectRoot);
+  const integrationRoot = await findWorkspaceGroupIntegrationRoot(explicitRoot);
+  const integration = integrationRoot ? await readWorkspaceGroupIntegration(integrationRoot) : null;
+  const boundRoot = integration?.taskRoot ?? (await findWorkspaceGroupRoot(explicitRoot));
+  const bound = boundRoot ? await readWorkspaceGroup(boundRoot) : null;
+  const coordinatorRoot =
+    bound?.coordinatorRoot ??
+    (await findWorkspaceGroupSourceCoordinator(explicitRoot)) ??
+    explicitRoot;
+  const groups = await listWorkspaceGroups(coordinatorRoot);
+  if (groups.length) {
+    const taskRoots = groups.map((group) => group.projectRoot);
+    const integrations = await listWorkspaceGroupIntegrations(coordinatorRoot);
+    const allRoots = [
+      ...taskRoots,
+      coordinatorRoot,
+      ...integrations.map((item) => item.projectRoot),
+    ];
+    const ownerOf = (root: string) =>
+      integrations.find((item) => item.projectRoot === root)?.taskRoot ?? root;
+    const cwdRoot = request.cwd ? owningWorktree(path.resolve(request.cwd), allRoots) : null;
+    const owners = new Set<string>();
+    const session = request.sessionId
+      ? await readWorkspaceGroupSession(coordinatorRoot, request.sessionId)
+      : null;
+    if (session) owners.add(session.projectRoot);
+    if (boundRoot) owners.add(boundRoot);
+    if (cwdRoot && taskRoots.includes(ownerOf(cwdRoot))) owners.add(ownerOf(cwdRoot));
+    for (const target of request.targets) {
+      const absolute = path.isAbsolute(target)
+        ? target
+        : `${request.cwd ?? explicitRoot}${path.sep}${target}`;
+      for (const root of allRoots) {
+        const integration = integrations.find((item) => item.projectRoot === root);
+        if (await isCometHookTargetWithin(root, absolute)) {
+          if (integration && !(await readWorkspaceGroupIntegration(root)))
+            throw new Error('Workspace group integration registration is incomplete');
+          owners.add(ownerOf(root));
+        }
+        for (const candidate of cometHookRuntimeTargetCandidates(
+          explicitRoot,
+          target,
+          request.cwd,
+        )) {
+          // Retained integration roots keep their identity and routing after member cleanup.
+          if (
+            integration &&
+            request.intent === 'write' &&
+            ((await isCometHookTargetWithin(resolveWorkspaceRuntimeRootSync(root), candidate)) ||
+              (await isCometHookTargetWithin(path.join(root, '.comet/runtime'), candidate)))
+          )
+            throw new Error(
+              'Comet Runtime-owned integration files must be maintained by Runtime commands',
+            );
+          if (await isCometHookTargetWithin(resolveWorkspaceRuntimeRootSync(root), candidate))
+            owners.add(ownerOf(root));
+        }
+      }
+    }
+    if (owners.size > 1)
+      throw new Error(
+        'one Hook request cannot write across multiple task workspaces' +
+          (session
+            ? `; session is bound to ${session.name} at ${session.projectRoot}. From coordinator ${coordinatorRoot}, use comet native select <change-name> --session <actual-session> to explicitly switch tasks`
+            : ''),
+      );
+    const owner = [...owners][0];
+    if (owner && owner !== coordinatorRoot) {
+      const group = await readWorkspaceGroup(owner);
+      if (!group) throw new Error(`Workspace group registration is incomplete: ${owner}`);
+      if (request.intent === 'write') {
+        if (request.sessionId) await bindWorkspaceGroupSession(group, request.sessionId);
+        else if (!boundRoot && !taskRoots.includes(cwdRoot ?? ''))
+          throw new Error(
+            `Task writes from the coordinator require a Hook session ID; run this tool from the task directory ${owner}`,
+          );
+      }
+      return owner;
+    }
+  }
   if (request.targets.length === 0) return explicitRoot;
   const roots = listGitWorktreeRoots(explicitRoot);
   if (roots.length < 2) return explicitRoot;

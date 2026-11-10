@@ -10877,6 +10877,460 @@
           ]
         }
       ]
+    },
+    {
+      "id": "native-group-non-git-coordinator",
+      "sources": ["report:2026-11-10-native-multi-repository-workspace"],
+      "behavior": "Create a coordinated task from a non-Git parent containing independent child repositories.",
+      "coverageLevel": "public-cli",
+      "reproduction": "The self-contained Runtime at a61a2e5b4766e1ad62377dec598e402560a259b6 returns exit 65: Native branch and worktree isolation require an attached Git branch. The same temporary three-repository fixture succeeds through the new source CLI.",
+      "expected": "Create three linked worktrees under one task root while preserving the source repositories.",
+      "forbidden": "Require a Git parent, rewrite child repository structure, or mutate source work.",
+      "rootCause": "Workspace preparation assumed the invocation root was one attached Git checkout.",
+      "tests": [
+        {
+          "file": "test/domains/comet-native/native-workspace-group.test.ts",
+          "namePattern": "^Native workspace group creation reproduces the baseline non-Git coordinator failure and creates the same task with the new public CLI$",
+          "requiredNames": [
+            "Native workspace group creation reproduces the baseline non-Git coordinator failure and creates the same task with the new public CLI"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "native-group-parallel-task-roots",
+      "sources": ["report:2026-11-10-native-multi-repository-workspace"],
+      "behavior": "Run two independent SDK changes from one multi-repository coordinator.",
+      "coverageLevel": "public-cli",
+      "reproduction": "The old non-Git creation boundary rejects the first worktree task. Current CLI regression creates two task groups, resolves both Runs and repeats creation.",
+      "expected": "Each task owns an isolated root and Run; coordinator status finds both and repeated new reuses the original task.",
+      "forbidden": "Share a mutable active change selection across both task roots or duplicate an existing Run.",
+      "rootCause": "Single-workspace ownership was the only task boundary.",
+      "tests": [
+        {
+          "file": "test/domains/comet-native/native-workspace-group.test.ts",
+          "namePattern": "^Native workspace group creation creates SDK tasks through the public CLI and finds their Runs from the coordinator$",
+          "requiredNames": [
+            "Native workspace group creation creates SDK tasks through the public CLI and finds their Runs from the coordinator"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "native-group-hook-ownership",
+      "sources": ["report:2026-11-10-native-multi-repository-workspace"],
+      "behavior": "Reject writes from a task into another task or original child repositories.",
+      "coverageLevel": "runtime",
+      "reproduction": "Deterministic Hook routing tests use two real registered task groups; this is adapter evidence, not a real Agent platform event.",
+      "expected": "Same-task repository writes reach the task guard; cross-task and task-to-source writes are denied.",
+      "forbidden": "Treat a neighboring repository or task as an authorized write target.",
+      "rootCause": "A single Git root did not express the complete multi-repository task boundary.",
+      "tests": [
+        {
+          "file": "test/domains/comet-entry/hook-workspace-group.test.ts",
+          "namePattern": "^Comet Hook workspace groups rejects cross-task writes and task writes into the original source repositories$",
+          "requiredNames": [
+            "Comet Hook workspace groups rejects cross-task writes and task writes into the original source repositories"
+          ]
+        },
+        {
+          "file": "test/domains/comet-entry/hook-workspace-group.test.ts",
+          "namePattern": "^Comet Hook workspace groups (binds parent-cwd sessions to one task and only switches through explicit select|serializes first task binding and requires task cwd when the platform omits session identity|rejects cross-task aliases and runtime writes without bypassing the phase guard|fails closed for corrupt session records and missing task registration|preserves session selection across generated CLI and Hook processes)$",
+          "requiredNames": [
+            "Comet Hook workspace groups binds parent-cwd sessions to one task and only switches through explicit select",
+            "Comet Hook workspace groups serializes first task binding and requires task cwd when the platform omits session identity",
+            "Comet Hook workspace groups rejects cross-task aliases and runtime writes without bypassing the phase guard",
+            "Comet Hook workspace groups fails closed for corrupt session records and missing task registration",
+            "Comet Hook workspace groups preserves session selection across generated CLI and Hook processes"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "native-group-dirty-target-preserved",
+      "sources": ["report:2026-11-10-native-multi-repository-workspace"],
+      "behavior": "Preserve unrelated edits in an original target during local delivery.",
+      "coverageLevel": "runtime",
+      "reproduction": "Current three-repository delivery fixture dirties the frontend target before apply; old Runtime does not reach multi-repository delivery.",
+      "expected": "Reject all target updates and retain the dirty bytes; succeed after the fixture resolves those edits.",
+      "forbidden": "Overwrite original edits or partially update other targets despite the initial dirty-target check.",
+      "rootCause": "Multi-repository delivery needs a pre-update check across every target.",
+      "tests": [
+        {
+          "file": "test/domains/comet-native/native-workspace-group-delivery.test.ts",
+          "namePattern": "^Native workspace group Git delivery preserves dirty original work and refuses all target updates until it is resolved$",
+          "requiredNames": [
+            "Native workspace group Git delivery preserves dirty original work and refuses all target updates until it is resolved"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "native-group-partial-merge-recovery",
+      "sources": ["report:2026-11-10-native-multi-repository-workspace"],
+      "behavior": "Resume partially applied local delivery without repeating completed merges.",
+      "coverageLevel": "runtime",
+      "reproduction": "A real foreign frontend ref lock allows the backend update and interrupts the frontend update.",
+      "expected": "Preserve the lock and successful backend SHA; continue the same plan after the fixture removes its lock.",
+      "forbidden": "Delete the foreign lock, roll back the backend, or create another backend merge.",
+      "rootCause": "Git cannot atomically update independent repositories; each publication needs a durable receipt.",
+      "tests": [
+        {
+          "file": "test/domains/comet-native/native-workspace-group-delivery.test.ts",
+          "namePattern": "^Native workspace group Git delivery recovers partial target publication without repeating successful merges or deleting a foreign Git lock$",
+          "requiredNames": [
+            "Native workspace group Git delivery recovers partial target publication without repeating successful merges or deleting a foreign Git lock"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "native-group-stale-delivery-inputs",
+      "sources": ["report:2026-11-10-native-multi-repository-workspace"],
+      "behavior": "Refuse to apply a plan after task, integration or target drift.",
+      "coverageLevel": "runtime",
+      "reproduction": "Current delivery fixture independently changes task bytes, integration bytes, target HEAD and the supplied plan hash.",
+      "expected": "Every stale case rejects before other targets update.",
+      "forbidden": "Merge unaccepted bytes or apply an obsolete target plan.",
+      "rootCause": "The complete repository group and integration evidence must be bound to one delivery plan.",
+      "tests": [
+        {
+          "file": "test/domains/comet-native/native-workspace-group-delivery.test.ts",
+          "namePattern": "^Native workspace group Git delivery rejects changed targets, task bytes and prepared integration bytes$",
+          "requiredNames": [
+            "Native workspace group Git delivery rejects changed targets, task bytes and prepared integration bytes"
+          ]
+        },
+        {
+          "file": "test/domains/comet-native/native-workspace-group-delivery.test.ts",
+          "namePattern": "^Native workspace group Git delivery copies accepted task-root check inputs and binds both source and integration bytes$",
+          "requiredNames": [
+            "Native workspace group Git delivery copies accepted task-root check inputs and binds both source and integration bytes"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "native-group-refresh-integration",
+      "sources": ["report:2026-11-10-native-multi-repository-workspace"],
+      "behavior": "Prepare fresh combined checks after target advancement.",
+      "coverageLevel": "runtime",
+      "reproduction": "Prepare a ready integration, advance the frontend target, then refresh with the exact previous delivery ID.",
+      "expected": "Retain old integration evidence, reuse task commits, rerun checks, retain target work and make refresh retry idempotent.",
+      "forbidden": "Reuse old check success for changed integration inputs or duplicate task commits.",
+      "rootCause": "Target advancement invalidates the original integration but not the accepted task candidate.",
+      "tests": [
+        {
+          "file": "test/domains/comet-native/native-workspace-group-delivery.test.ts",
+          "namePattern": "^Native workspace group Git delivery refreshes moved targets with fresh combined checks and retains the previous evidence$",
+          "requiredNames": [
+            "Native workspace group Git delivery refreshes moved targets with fresh combined checks and retains the previous evidence"
+          ]
+        },
+        {
+          "file": "test/domains/comet-native/native-workspace-group-delivery.test.ts",
+          "namePattern": "^Native workspace group Git delivery refreshes after partial publication without rolling back or duplicating the published repository$",
+          "requiredNames": [
+            "Native workspace group Git delivery refreshes after partial publication without rolling back or duplicating the published repository"
+          ]
+        },
+        {
+          "file": "test/domains/comet-native/native-workspace-group-delivery.test.ts",
+          "namePattern": "^Native workspace group Git delivery refuses refresh when an interrupted publication may have been removed from the target$",
+          "requiredNames": [
+            "Native workspace group Git delivery refuses refresh when an interrupted publication may have been removed from the target"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "native-group-shared-spec-conflicts",
+      "sources": ["report:2026-11-10-native-multi-repository-workspace"],
+      "behavior": "Publish only merged capabilities without overwriting concurrently changed shared Specs.",
+      "coverageLevel": "runtime",
+      "reproduction": "Capture the creation baseline; exercise capability creation, modification and removal while the shared modified capability has concurrent edits.",
+      "expected": "Reject the conflict before any Spec write; after resolution publish the changes, preserve unrelated files and retain later updates on repeat.",
+      "forbidden": "Overwrite another task's Spec, lose a removed-file conflict, or republish an older result over newer Specs.",
+      "rootCause": "Independent task archives need a separate baseline-bound publication to the coordinator.",
+      "tests": [
+        {
+          "file": "test/domains/comet-native/native-workspace-group-delivery.test.ts",
+          "namePattern": "^Native workspace group Git delivery preserves the task Specs baseline and publishes create, modify and removal without overwriting concurrent shared changes$",
+          "requiredNames": [
+            "Native workspace group Git delivery preserves the task Specs baseline and publishes create, modify and removal without overwriting concurrent shared changes"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "native-group-generated-lifecycle",
+      "sources": ["report:2026-11-10-native-multi-repository-workspace"],
+      "behavior": "Complete two-task creation and the accepted task's verification, Archive and local merge through the generated CLI.",
+      "coverageLevel": "public-cli",
+      "reproduction": "Run the generated self-contained Native Runtime with three temporary repositories and normal SDK claims, outcomes and simulated user decisions.",
+      "expected": "Block delivery before acceptance and after candidate drift; run combined checks; merge only the accepted task; report and recover a shared-Spec conflict without affecting the other task.",
+      "forbidden": "Forge SDK phase state, call internal merge helpers instead of the CLI, or count the simulated host as real model or platform acceptance.",
+      "rootCause": "Multi-repository support must connect creation, routing, candidate evidence, Archive and Git delivery at the shipped command boundary.",
+      "tests": [
+        {
+          "file": "test/domains/comet-native/native-group-lifecycle.test.ts",
+          "namePattern": "^creates two three-repository SDK tasks and delivers only the accepted archived candidate through the public CLI \\(bundle\\)$",
+          "requiredNames": [
+            "creates two three-repository SDK tasks and delivers only the accepted archived candidate through the public CLI (bundle)"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "native-group-local-setup",
+      "sources": ["report:2026-11-10-native-multi-repository-workspace"],
+      "behavior": "Prepare explicit local configuration and repeatable setup commands for isolated multi-repository tasks.",
+      "coverageLevel": "public-cli",
+      "reproduction": "Source CLI fixtures use three temporary repositories and deterministic Node preparation commands. The baseline has no multi-repository setup option; these assertions cover the new setup boundary, not real dependency managers or Agent decisions.",
+      "expected": "Dry-run only validates and hashes the allowlist; creation and integration prepare isolated environments, bind ignored configuration inputs, and preserve task-local edits on retry.",
+      "forbidden": "Run setup during dry-run, copy unlisted or tracked files, disclose configuration contents, overwrite edited task files, or treat missing declared configuration as a complete input snapshot.",
+      "rootCause": "Git worktrees omit ignored local configuration and dependencies; workspace creation needs explicit, recoverable preparation before SDK execution.",
+      "tests": [
+        {
+          "file": "test/domains/comet-native/native-workspace-group.test.ts",
+          "namePattern": "^Native workspace group creation preflights explicit local setup without copying secrets and binds copied ignored inputs$",
+          "requiredNames": [
+            "Native workspace group creation preflights explicit local setup without copying secrets and binds copied ignored inputs"
+          ]
+        },
+        {
+          "file": "test/domains/comet-native/native-workspace-group.test.ts",
+          "namePattern": "^Native workspace group creation retries failed repeatable setup without overwriting task-local configuration$",
+          "requiredNames": [
+            "Native workspace group creation retries failed repeatable setup without overwriting task-local configuration"
+          ]
+        },
+        {
+          "file": "test/domains/comet-native/native-workspace-group.test.ts",
+          "namePattern": "^Native workspace group creation rejects unsafe local setup and stale local-file hashes before creating worktrees$",
+          "requiredNames": [
+            "Native workspace group creation rejects unsafe local setup and stale local-file hashes before creating worktrees"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "native-group-safe-cleanup",
+      "sources": ["report:2026-11-10-native-multi-repository-workspace"],
+      "behavior": "Clean eligible merged worktrees while retaining local files and readable SDK history.",
+      "coverageLevel": "public-cli",
+      "reproduction": "The generated CLI lifecycle uses three temporary repositories, explicit setup files, dirty work, completed acceptance and delivery, then retries cleanup including an interrupted removal receipt. Baseline has no group cleanup command.",
+      "expected": "Preserve ignored and dirty files, remove eligible worktrees, retain formal artifacts and branches, keep named status readable from both roots, and resume without repeating removal.",
+      "forbidden": "Delete ignored configuration or changed work, reuse historical status for workflow advancement, or remove a replacement directory at an already cleaned path.",
+      "rootCause": "Ordinary Git worktree removal can delete ignored files, and strict live-member binding alone cannot read history after cleanup.",
+      "tests": [
+        {
+          "file": "test/domains/comet-native/native-group-lifecycle.test.ts",
+          "namePattern": "^creates two three-repository SDK tasks and delivers only the accepted archived candidate through the public CLI \\(bundle\\)$",
+          "requiredNames": [
+            "creates two three-repository SDK tasks and delivers only the accepted archived candidate through the public CLI (bundle)"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "native-group-foreign-branch",
+      "sources": ["report:2026-11-10-native-multi-repository-workspace"],
+      "behavior": "Refuse a foreign same-name branch during partial group creation.",
+      "coverageLevel": "runtime",
+      "reproduction": "A temporary three-repository fixture interrupts creation with an external Git lock, then creates the expected branch outside the transaction at the same base commit.",
+      "expected": "Reject adoption, preserve the foreign branch, and finish the original creation after the fixture explicitly removes its foreign branch.",
+      "forbidden": "Treat an equal commit as proof that a branch belongs to the creation transaction.",
+      "rootCause": "Commit equality does not prove branch ownership; creation needs its own Git reflog marker.",
+      "tests": [
+        {
+          "file": "test/domains/comet-native/native-workspace-group.test.ts",
+          "namePattern": "^Native workspace group creation does not adopt a foreign branch during partial creation even when its commit matches$",
+          "requiredNames": [
+            "Native workspace group creation does not adopt a foreign branch during partial creation even when its commit matches"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "native-group-partial-target-freshness",
+      "behavior": "Require fresh joint checks when a published target advances before partial delivery completes.",
+      "coverageLevel": "public-cli",
+      "reproduction": "Before the fix, a generated-CLI fixture merged the backend, interrupted frontend publication with a ref lock, then advanced the backend to break the accepted joint check; repeating apply still returned merged.",
+      "expected": "Reject the stale apply, preserve published work, and refresh integration with new check evidence; a broken joint contract fails the new check.",
+      "forbidden": "Finish partial publication using checks from before an already published target advanced.",
+      "rootCause": "The applied-member retry path accepted any descendant of the integration commit without checking whether the unfinished delivery still matched its evidence.",
+      "tests": [
+        {
+          "file": "test/domains/comet-native/native-workspace-group-delivery.test.ts",
+          "namePattern": "^Native workspace group Git delivery requires fresh combined checks when an already published target advances before retry$",
+          "requiredNames": [
+            "Native workspace group Git delivery requires fresh combined checks when an already published target advances before retry"
+          ]
+        },
+        {
+          "file": "test/domains/comet-native/native-group-lifecycle.test.ts",
+          "namePattern": "^creates two three-repository SDK tasks and delivers only the accepted archived candidate through the public CLI \\(bundle\\)$",
+          "requiredNames": [
+            "creates two three-repository SDK tasks and delivers only the accepted archived candidate through the public CLI (bundle)"
+          ]
+        }
+      ],
+      "sources": ["report:2026-11-10-native-multi-repository-review"]
+    },
+    {
+      "id": "native-group-original-source-hook",
+      "behavior": "Honor a task session when the generated global Hook runs from a registered original child checkout.",
+      "coverageLevel": "public-cli",
+      "reproduction": "Before the fix, the generated Hook received a bound task session with cwd in the original backend; source and foreign-task writes exited zero. The regression supplies deterministic platform-shaped input, not a live Agent event.",
+      "expected": "Locate the coordinator through exact source registration, reject source and foreign-task writes, preserve the task phase guard, and leave an unregistered neighboring Git project independent.",
+      "forbidden": "Lose the session binding at the original child Git boundary or adopt an unrelated nested repository.",
+      "rootCause": "Global root discovery stopped at the child Git root and searched that child for a coordinator session registry.",
+      "tests": [
+        {
+          "file": "test/domains/comet-entry/hook-workspace-group.test.ts",
+          "namePattern": "^Comet Hook workspace groups enforces bound sessions from original source repositories through the generated global Hook$",
+          "requiredNames": [
+            "Comet Hook workspace groups enforces bound sessions from original source repositories through the generated global Hook"
+          ]
+        }
+      ],
+      "sources": ["report:2026-11-10-native-multi-repository-review"]
+    },
+    {
+      "id": "native-group-task-root-overlap",
+      "behavior": "Reject overlapping task workspace paths before creating their worktrees.",
+      "coverageLevel": "public-cli",
+      "reproduction": "Before the fix, public new accepted a task nested inside another task and subsequent Hook writes belonged to both. Regression also reserves the outer task between preflight and creation.",
+      "expected": "Reject nesting during preflight and under the creation lock, preserve pending and complete tasks, and allow a separate sibling task.",
+      "forbidden": "Create an ambiguous nested task or its Git branches after overlap is known.",
+      "rootCause": "Creation checked source-coordinator overlap but did not compare other registered or partially created task roots.",
+      "tests": [
+        {
+          "file": "test/domains/comet-native/native-workspace-group.test.ts",
+          "namePattern": "^Native workspace group creation rejects nested task roots during preflight and after a competing creation reserves its directory$",
+          "requiredNames": [
+            "Native workspace group creation rejects nested task roots during preflight and after a competing creation reserves its directory"
+          ]
+        }
+      ],
+      "sources": ["report:2026-11-10-native-multi-repository-review"]
+    },
+    {
+      "id": "native-group-cleaned-session-switch",
+      "behavior": "Allow explicit session selection after valid cleanup removes the previous task worktrees.",
+      "coverageLevel": "public-cli",
+      "reproduction": "Before the fix, the public CLI completed acceptance, delivery and cleanup, but select of a new task using the same builder session failed with ENOENT.",
+      "expected": "Switch after verifying the original completed Run and cleanup receipt; still reject an active missing member, damaged receipt or reused removed directory.",
+      "forbidden": "Require a deleted retired worktree to exist, silently release an invalid active task, or advance the cleaned task from its historical projection.",
+      "rootCause": "Session replacement validated every previous member as live before honoring explicit select.",
+      "tests": [
+        {
+          "file": "test/domains/comet-native/native-group-lifecycle.test.ts",
+          "namePattern": "^creates two three-repository SDK tasks and delivers only the accepted archived candidate through the public CLI \\(bundle\\)$",
+          "requiredNames": [
+            "creates two three-repository SDK tasks and delivers only the accepted archived candidate through the public CLI (bundle)"
+          ]
+        },
+        {
+          "file": "test/domains/comet-entry/hook-workspace-group.test.ts",
+          "namePattern": "^Comet Hook workspace groups does not switch away from a missing active member without a cleanup receipt$",
+          "requiredNames": [
+            "Comet Hook workspace groups does not switch away from a missing active member without a cleanup receipt"
+          ]
+        }
+      ],
+      "sources": ["report:2026-11-10-native-multi-repository-review"]
+    },
+    {
+      "id": "native-group-committed-integration-checks",
+      "sources": ["report:2026-11-10-native-multi-repository-review-2"],
+      "behavior": "Reject uncommitted integration repairs before rerunning failed checks or publishing the recorded commit.",
+      "coverageLevel": "public-cli",
+      "reproduction": "Before the fix, a generated CLI fixture failed a joint check, repaired only integration working files, and retried successfully; apply published the unchanged commit whose joint check still failed.",
+      "expected": "Reject staged, unstaged and ordinary untracked integration inputs before checks or apply, preserve local files, and allow a fresh successful round after the target is repaired.",
+      "forbidden": "Accept check evidence for working bytes that are absent from the commit being published.",
+      "rootCause": "A retry with an existing integrationCommit skipped clean-input validation and fingerprinted working bytes separately from the recorded commit.",
+      "tests": [
+        {
+          "file": "test/domains/comet-native/native-workspace-group-delivery.test.ts",
+          "namePattern": "^Native workspace group Git delivery rejects uncommitted integration repairs before retrying failed checks or publishing old commits$",
+          "requiredNames": [
+            "Native workspace group Git delivery rejects uncommitted integration repairs before retrying failed checks or publishing old commits"
+          ]
+        },
+        {
+          "file": "test/domains/comet-native/native-group-lifecycle.test.ts",
+          "namePattern": "^creates two three-repository SDK tasks and delivers only the accepted archived candidate through the public CLI \\(bundle\\)$",
+          "requiredNames": [
+            "creates two three-repository SDK tasks and delivers only the accepted archived candidate through the public CLI (bundle)"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "native-group-integration-hook-ownership",
+      "sources": ["report:2026-11-10-native-multi-repository-review-2"],
+      "behavior": "Enforce the owning task session when the global Hook runs from an integration root or child worktree.",
+      "coverageLevel": "public-cli",
+      "reproduction": "Before the fix, the generated Hook with the accepted task session and integration backend cwd allowed writes into another task and the original frontend. Tests supply deterministic platform-shaped events, not a live platform Hook.",
+      "expected": "Resolve a registered integration to its original task, allow its own integration file edits, reject foreign task, original checkout and aliased cross-task targets, and block damaged ownership or Runtime metadata writes.",
+      "forbidden": "Fall through to an unbound child repository when integration ownership is missing or corrupt.",
+      "rootCause": "The shared ownership registry covered task and original source roots but omitted delivery integration roots.",
+      "tests": [
+        {
+          "file": "test/domains/comet-entry/hook-workspace-group.test.ts",
+          "namePattern": "^Comet Hook workspace groups routes integration worktrees to their task and rejects foreign, aliased and damaged integration ownership$",
+          "requiredNames": [
+            "Comet Hook workspace groups routes integration worktrees to their task and rejects foreign, aliased and damaged integration ownership"
+          ]
+        },
+        {
+          "file": "test/domains/comet-native/native-group-lifecycle.test.ts",
+          "namePattern": "^creates two three-repository SDK tasks and delivers only the accepted archived candidate through the public CLI \\(bundle\\)$",
+          "requiredNames": [
+            "creates two three-repository SDK tasks and delivers only the accepted archived candidate through the public CLI (bundle)"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "native-group-cleanup-branch-ownership",
+      "sources": ["report:2026-11-10-native-multi-repository-review-2"],
+      "behavior": "Preserve task or integration worktrees whose checkout branch changed before cleanup retry.",
+      "coverageLevel": "public-cli",
+      "reproduction": "Before the fix, the generated CLI retained a worktree with ignored files on first cleanup, then removed it after a same-commit switch to an unrelated branch and local file removal.",
+      "expected": "Retain a task checked out on another branch and an integration attached to a branch, even at the expected commit; finish cleanup once the original checkout states are restored.",
+      "forbidden": "Treat matching workspace identity and commit as proof that the current checkout still belongs to cleanup.",
+      "rootCause": "Cleanup retries checked identity and HEAD but did not compare the task branch or integration detached state.",
+      "tests": [
+        {
+          "file": "test/domains/comet-native/native-group-lifecycle.test.ts",
+          "namePattern": "^creates two three-repository SDK tasks and delivers only the accepted archived candidate through the public CLI \\(bundle\\)$",
+          "requiredNames": [
+            "creates two three-repository SDK tasks and delivers only the accepted archived candidate through the public CLI (bundle)"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "native-group-cleaned-cwd-recovery",
+      "sources": ["report:2026-11-10-native-multi-repository-review-2"],
+      "behavior": "Discover a retired task from its own cwd for status and cleanup retry after member removal.",
+      "coverageLevel": "public-cli",
+      "reproduction": "Before the fix, generated CLI status and cleanup without project-root failed with ENOENT from the task root after one child worktree was removed, while explicitly supplying the root worked.",
+      "expected": "Resolve intact task metadata after partial and complete cleanup, allow named historical status and cleanup retry without project-root, and still reject workflow advancement, invalid receipts and missing active members.",
+      "forbidden": "Require deleted members merely to discover the task, or use historical discovery to bypass live execution checks.",
+      "rootCause": "Ancestor discovery called strict live-member validation before a historical or recovery command could validate its cleanup receipt.",
+      "tests": [
+        {
+          "file": "test/domains/comet-native/native-group-lifecycle.test.ts",
+          "namePattern": "^creates two three-repository SDK tasks and delivers only the accepted archived candidate through the public CLI \\(bundle\\)$",
+          "requiredNames": [
+            "creates two three-repository SDK tasks and delivers only the accepted archived candidate through the public CLI (bundle)"
+          ]
+        }
+      ]
     }
   ]
 }

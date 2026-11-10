@@ -9,7 +9,11 @@ import {
   inspectNativeSdkCheckExecutions,
   reconcileNativeSdkExecutionStops,
 } from './native-sdk-check-execution.js';
-import { inspectNativeSdkRun, loadOwnedNativeSdkRuntime } from './native-runtime-ownership.js';
+import {
+  inspectNativeSdkRun,
+  loadOwnedNativeSdkRuntime,
+  resolveNativeSdkCommandRoot,
+} from './native-runtime-ownership.js';
 import {
   assertNoArguments,
   NativeUsageError,
@@ -33,6 +37,12 @@ export async function nativeCancelCommand(
 ): Promise<DispatchResult> {
   const name = args.shift();
   if (!name || name.startsWith('--')) throw new NativeUsageError('cancel requires a change name');
+  const commandRoot = await resolveNativeSdkCommandRoot(projectRoot, name);
+  if (commandRoot !== projectRoot)
+    return {
+      ...(await nativeCancelCommand([name, ...args], commandRoot)),
+      executionCwd: commandRoot,
+    };
   const reason = takeOption(args, '--reason') ?? DEFAULT_CANCEL_REASON;
   const dryRun = takeFlag(args, '--dry-run');
   assertNoArguments(args);

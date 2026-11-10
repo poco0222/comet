@@ -20,6 +20,14 @@ import { withNativeLockRecovery } from './native-lock.js';
 import { nativeProjectPaths } from './native-paths.js';
 import type { CometProjectConfig } from './native-types.js';
 import type { NativeWorkspaceBinding, NativeWorkspaceIsolation } from './native-workspace.js';
+import { canonicalHash } from './native-canonical-hash.js';
+import { initializeNativeWorkspaceGroupSpecs } from './native-workspace-group-specs.js';
+import { prepareNativeWorkspaceSetup } from './native-workspace-setup.js';
+import {
+  createNativeWorkspaceGroup,
+  readNativeWorkspaceGroup,
+  type NativeWorkspaceGroupPlan,
+} from './native-workspace-group.js';
 
 export interface NativeWorkspacePreparation {
   isolation: NativeWorkspaceIsolation;
@@ -31,6 +39,7 @@ export interface NativeWorkspacePreparation {
   createdWorktree: boolean;
   gitExcludeUpdated: boolean;
   configInitialized: boolean;
+  group?: NativeWorkspaceGroupPlan;
 }
 
 export interface PreparedNativeWorkspace {
@@ -59,7 +68,7 @@ function isInside(parent: string, target: string): boolean {
 }
 
 function nativeConfigIdentity(config: CometProjectConfig): string {
-  return JSON.stringify(config.native);
+  return JSON.stringify({ native: config.native, repositories: config.repositories });
 }
 
 async function ensureConfig(
@@ -153,8 +162,99 @@ export async function prepareNativeWorkspace(options: {
   targetBranch?: string;
   worktreePath?: string;
   sourceConfig: CometProjectConfig | null;
+  groupPlan?: NativeWorkspaceGroupPlan;
 }): Promise<PreparedNativeWorkspace> {
   const initialRoot = path.resolve(options.projectRoot);
+  if (options.groupPlan) {
+    const plan = options.groupPlan;
+    if (
+      options.isolation !== 'worktree' ||
+      options.changeBranch ||
+      options.targetBranch ||
+      plan.name !== options.name ||
+      plan.coordinatorRoot !== (await fs.realpath(initialRoot)) ||
+      plan.configurationHash !==
+        canonicalHash('comet.native.workspace-group-config', options.sourceConfig)
+    )
+      throw new Error(
+        'Native workspace group preparation does not match its plan or source configuration',
+      );
+    const createdBranch = plan.repositories.some(
+      (entry) => !isLocalGitBranch(entry.sourceRoot, entry.changeBranch),
+    );
+    const createdWorktree = (
+      await Promise.all(plan.repositories.map((entry) => pathExists(entry.worktreeRoot)))
+    ).some((present) => !present);
+    const group = await createNativeWorkspaceGroup(plan);
+    await initializeNativeWorkspaceGroupSpecs(
+      group,
+      options.sourceConfig?.native.artifact_root ?? 'docs',
+    );
+    const configInitialized = await ensureConfig(group.plan.projectRoot, options.sourceConfig);
+    await prepareNativeWorkspaceSetup({
+      sourceRoot: plan.coordinatorRoot,
+      targetRoot: plan.projectRoot,
+      repositories: plan.repositories,
+      setup: plan.setup,
+    });
+    return {
+      projectRoot: plan.projectRoot,
+      binding: {
+        isolation: 'current',
+        changeBranch: null,
+        targetBranch: null,
+        groupHash: plan.hash,
+      },
+      preparation: {
+        isolation: 'worktree',
+        projectRoot: plan.projectRoot,
+        changeBranch: null,
+        targetBranch: null,
+        worktreePath: plan.projectRoot,
+        createdBranch,
+        createdWorktree,
+        gitExcludeUpdated: false,
+        configInitialized,
+        group: plan,
+      },
+    };
+  }
+  const group = await readNativeWorkspaceGroup(initialRoot);
+  if (group) {
+    if (
+      group.plan.name !== options.name ||
+      options.isolation !== 'current' ||
+      options.changeBranch ||
+      options.targetBranch ||
+      options.worktreePath
+    )
+      throw new Error(
+        'Native task workspace is already bound to its original group; use its original new command to recover',
+      );
+    return {
+      projectRoot: initialRoot,
+      binding: {
+        isolation: 'current',
+        changeBranch: null,
+        targetBranch: null,
+        groupHash: group.plan.hash,
+      },
+      preparation: {
+        isolation: 'worktree',
+        projectRoot: initialRoot,
+        changeBranch: null,
+        targetBranch: null,
+        worktreePath: initialRoot,
+        createdBranch: false,
+        createdWorktree: false,
+        gitExcludeUpdated: false,
+        configInitialized: false,
+        group: group.plan,
+      },
+    };
+  }
+  if (options.sourceConfig?.repositories)
+    throw new Error('Native multi-repository workspace requires a reviewed workspace group plan');
   if (options.isolation === 'current') {
     if (options.changeBranch || options.targetBranch || options.worktreePath) {
       throw new Error(

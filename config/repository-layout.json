@@ -51,6 +51,7 @@
       "cancel": "domains/comet-native/native-cancel-entry.ts",
       "next": "domains/comet-native/native-next-entry.ts",
       "archive": "domains/comet-native/native-archive-entry.ts",
+      "deliver": "domains/comet-native/native-deliver-entry.ts",
       "doctor": "domains/comet-native/native-doctor-entry.ts",
       "transfer": "domains/comet-native/native-transfer-entry.ts"
     },
@@ -67,6 +68,7 @@
       "cancel": "assets/skills/comet-native/scripts/comet-native-cancel.mjs",
       "next": "assets/skills/comet-native/scripts/comet-native-next.mjs",
       "archive": "assets/skills/comet-native/scripts/comet-native-archive.mjs",
+      "deliver": "assets/skills/comet-native/scripts/comet-native-deliver.mjs",
       "doctor": "assets/skills/comet-native/scripts/comet-native-doctor.mjs",
       "transfer": "assets/skills/comet-native/scripts/comet-native-transfer.mjs"
     }
@@ -522,6 +524,7 @@
       "domains/skill/types.ts",
       "domains/skill/validate.ts",
       "domains/workflow-contract/workspace-runtime.ts",
+      "domains/workflow-contract/workspace-group.ts",
       "domains/workflow-contract/change-runtime-owner.ts",
       "domains/workflow-contract/contained-atomic-write.ts",
       "domains/workflow-contract/current-selection.ts",

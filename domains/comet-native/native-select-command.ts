@@ -10,12 +10,18 @@ import {
   NativePristineSdkRunRecoverableError,
 } from './native-status-discovery.js';
 import { selectNativeChange } from './native-selection.js';
+import { readNativeWorkspaceCleanupStatus } from './native-workspace-group-cleanup.js';
+import {
+  bindWorkspaceGroupSession,
+  readWorkspaceGroup,
+} from '../workflow-contract/workspace-group.js';
 import {
   assertNoArguments,
   configuredPaths,
   requiredPositional,
   success,
   takeFlag,
+  takeOption,
   type DispatchResult,
 } from './native-cli-shared.js';
 
@@ -87,7 +93,11 @@ export async function nativeSelectCommand(
 ): Promise<DispatchResult> {
   const name = requiredPositional(args, 'change name');
   const rebind = takeFlag(args, '--rebind');
+  const sessionId = takeOption(args, '--session');
   assertNoArguments(args);
+  if (sessionId !== undefined && !sessionId.trim()) throw new Error('--session must not be empty');
+  if (rebind && sessionId !== undefined)
+    throw new Error('--session and --rebind cannot be combined');
   await configuredPaths(projectRoot);
   if (rebind) await rebindNativeSdkWork(projectRoot, name);
   // The discovered projection carries the workspace that owns the change, so
@@ -119,7 +129,22 @@ export async function nativeSelectCommand(
     if (owner?.format !== 'sdk') throw error;
     status = await inspect();
   }
+  const group = sessionId !== undefined ? await readWorkspaceGroup(executionCwd) : null;
+  if (sessionId !== undefined && !group)
+    throw new Error('select --session requires a registered workspace group task');
   await selectNativeChange((await configuredPaths(executionCwd)).paths, name);
+  if (group && sessionId)
+    await bindWorkspaceGroupSession(group, sessionId, {
+      replace: true,
+      retiredRepositories: async (previous) => {
+        const status = await readNativeWorkspaceCleanupStatus(previous.projectRoot, previous.name);
+        return status?.workspace.planHash === previous.planHash
+          ? (status.cleanup?.removed ?? [])
+              .filter((key) => key.startsWith('task/'))
+              .map((key) => key.slice('task/'.length))
+          : [];
+      },
+    });
   return {
     ...success('select', { selected: name, ...status }),
     executionCwd,

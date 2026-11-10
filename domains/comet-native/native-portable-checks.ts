@@ -12,6 +12,10 @@ import {
   type NativeShapeSemanticSnapshot,
 } from './native-shape-semantics.js';
 import { nativeShapeReviewAnchorMatches } from './native-shape-review-evidence.js';
+import {
+  readNativeWorkspaceGroup,
+  assertNativeWorkspaceGroupCurrent,
+} from './native-workspace-group.js';
 import { createHash, randomUUID } from 'node:crypto';
 import {
   nativeLegacyArchiveGitStatus,
@@ -434,11 +438,16 @@ export async function nativeRawInputSnapshot(options: {
   projectRoot: string;
   managedArtifactRoot?: string;
   excludedPaths?: readonly string[];
+  includedPaths?: readonly string[];
   legacyArchiveOverlay?: NativeLegacyArchiveOverlay;
   previous?: NativeRawInputSnapshot;
   outputs?: string[];
 }): Promise<NativeRawInputSnapshot> {
   const root = await fs.realpath(options.projectRoot);
+  const workspaceGroup = await readNativeWorkspaceGroup(root);
+  const groupRepositories = new Map(
+    workspaceGroup?.plan.repositories.map((entry) => [entry.path, entry]) ?? [],
+  );
   const managedArtifactRoot = options.managedArtifactRoot
     ? await fs.realpath(options.managedArtifactRoot).catch((error: NodeJS.ErrnoException) => {
         if (error.code !== 'ENOENT') throw error;
@@ -453,6 +462,7 @@ export async function nativeRawInputSnapshot(options: {
   const outputs = options.outputs ?? options.previous?.outputs ?? [];
   const trackedPaths = new Set<string>();
   const outputExcluded = (ref: string) =>
+    !(options.includedPaths ?? []).includes(ref) &&
     outputs.some((output) => ref === output || ref.startsWith(`${output}/`)) &&
     ![...trackedPaths].some((tracked) => tracked === ref || tracked.startsWith(`${ref}/`));
   const excluded = (ref: string) =>
@@ -535,14 +545,19 @@ export async function nativeRawInputSnapshot(options: {
         root,
         [],
         managedArtifactRoot,
-        runnerInputs,
+        new Set([...runnerInputs, ...groupRepositories.keys()]),
         'paths',
       );
       if (!snapshot.complete) diagnostics.push(snapshot.diagnostic ?? '物理输入读取不完整');
       selection = snapshot.files.map((file) => file.path);
     }
   }
+  selection.push(...(options.includedPaths ?? []));
   const links = parseGitlinksInIndex(index);
+  for (const [ref, entry] of groupRepositories) {
+    links.set(ref, entry.baseCommit);
+    selection.push(ref);
+  }
   const objectIds = (value: string) =>
     new Map(
       value.split('\0').flatMap((record) => {
@@ -661,7 +676,7 @@ export async function nativeRawInputSnapshot(options: {
     }
   }
   const observed = await mapWithConcurrency(
-    selection.filter((ref) => !excluded(ref)).sort(),
+    [...new Set(selection)].filter((ref) => !excluded(ref)).sort(),
     16,
     async (ref) => {
       try {
@@ -693,7 +708,24 @@ export async function nativeRawInputSnapshot(options: {
             : undefined;
           const nested = await nativeRawInputSnapshot({
             projectRoot: childRoot,
+            managedArtifactRoot,
             previous: childPrevious,
+            ...(groupRepositories.has(ref)
+              ? {
+                  outputs: outputs
+                    .filter((output) => output.startsWith(prefix))
+                    .map((output) => output.slice(prefix.length)),
+                  excludedPaths: (options.excludedPaths ?? [])
+                    .filter((excluded) => excluded.startsWith(prefix))
+                    .map((excluded) => excluded.slice(prefix.length)),
+                  includedPaths: [
+                    ...(options.includedPaths ?? []),
+                    ...(workspaceGroup?.plan.setup?.files.map((file) => file.path) ?? []),
+                  ]
+                    .filter((included) => included.startsWith(prefix))
+                    .map((included) => included.slice(prefix.length)),
+                }
+              : {}),
           });
           if (!nested.complete) throw new Error(nested.diagnostics.join('；'));
           nestedFiles.push(
@@ -713,7 +745,13 @@ export async function nativeRawInputSnapshot(options: {
           );
           return {
             path: ref,
-            hash: digestNativeCheckInput('comet.native.raw-gitlink.v1'),
+            hash:
+              workspaceGroup && groupRepositories.has(ref)
+                ? canonicalHash('comet.native.raw-workspace-repository.v1', {
+                    planHash: workspaceGroup.plan.hash,
+                    member: workspaceGroup.repositories.find((member) => member.path === ref),
+                  })
+                : digestNativeCheckInput('comet.native.raw-gitlink.v1'),
             mode: '160000',
           };
         }
@@ -745,7 +783,12 @@ export async function nativeRawInputSnapshot(options: {
           ...(generated.has(ref) ? { generated: true as const } : {}),
         };
       } catch (error) {
-        if ((error as NodeJS.ErrnoException).code === 'ENOENT' && !physical) return null;
+        if (
+          (error as NodeJS.ErrnoException).code === 'ENOENT' &&
+          !physical &&
+          !(options.includedPaths ?? []).includes(ref)
+        )
+          return null;
         diagnostics.push(`${ref}：${String(error)}`);
         return null;
       }
@@ -880,6 +923,13 @@ export async function nativeRawInputSnapshot(options: {
     await readSession.finish();
   } catch (error) {
     diagnostics.push(`原始输入目录观察不完整：${String(error)}`);
+  }
+  if (workspaceGroup) {
+    try {
+      await assertNativeWorkspaceGroupCurrent(workspaceGroup);
+    } catch (error) {
+      diagnostics.push(`Native workspace group changed during input capture: ${String(error)}`);
+    }
   }
   return {
     schema: 'comet.native.raw-input.v1',

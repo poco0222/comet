@@ -8,6 +8,7 @@ import path from 'node:path';
 import { realpathSync } from 'node:fs';
 
 import { readSdkChangeOwner } from '../workflow-contract/change-runtime-owner.js';
+import { listWorkspaceGroups } from '../workflow-contract/workspace-group.js';
 import { inspectProtectedProjectPath } from '../workflow-contract/protected-project-path.js';
 import {
   gitWorktreeContextFromEntries,
@@ -280,6 +281,7 @@ async function discoverSources(
   const worktrees = listGitWorktrees(projectRoot);
   const roots = worktrees.map(({ root }) => root);
   const candidates = roots.length > 0 ? roots : [requestedRoot];
+  candidates.push(...(await listWorkspaceGroups(requestedRoot)).map((group) => group.projectRoot));
   if (!candidates.some((candidate) => samePath(candidate, requestedRoot))) {
     candidates.push(requestedRoot);
   }

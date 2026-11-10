@@ -10,6 +10,7 @@ import path from 'path';
 import os from 'os';
 
 import { normalizeWorkflowArtifactRoot } from '../workflow-contract/project-config.js';
+import { findWorkspaceGroupRoot } from '../workflow-contract/workspace-group.js';
 
 import type { NativeChangeArtifactPaths, NativeProjectPaths } from './native-types.js';
 
@@ -68,6 +69,8 @@ async function isSymbolicLink(target: string): Promise<boolean> {
 }
 
 export async function discoverNativeProject(startPath: string): Promise<string> {
+  const groupRoot = await findWorkspaceGroupRoot(startPath);
+  if (groupRoot) return groupRoot;
   let cursor = path.resolve(startPath);
   try {
     if (!(await fs.stat(cursor)).isDirectory()) cursor = path.dirname(cursor);

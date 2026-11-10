@@ -99,7 +99,7 @@ it.each(['source', 'bundle', ...(packageRoot ? ['package'] : [])])(
       command([...args, '--project-root', coordinator, '--json']);
     const ok = async (...args: string[]) => {
       const result = await invoke(...args);
-      expect(result.output.exitCode, result.output.stderr || result.output.stdout).toBe(0);
+      expect(result.output.exitCode, result.output.stdout + result.output.stderr).toBe(0);
       return result.dispatch.data as {
         phase?: string;
         status?: string;

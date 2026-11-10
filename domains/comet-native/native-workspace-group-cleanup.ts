@@ -106,8 +106,8 @@ export async function readNativeWorkspaceCleanupStatus(
   root: string,
   name: string,
 ): Promise<NativeSdkStatusProjection | null> {
-  const paths = await nativeProjectPaths(root, 'docs', { readOnly: true });
-  if (!(await readJson(paths.runtimeDir, 'group-delivery/cleanup.json'))) return null;
+  const { runtimeRoot } = resolveWorkspaceRuntimeLocation(root);
+  if (!(await readJson(runtimeRoot, 'native/group-delivery/cleanup.json'))) return null;
   const { receipt } = await cleanupStorage(root, name);
   return {
     ...receipt!.status,

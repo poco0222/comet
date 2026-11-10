@@ -11331,6 +11331,25 @@
           ]
         }
       ]
+    },
+    {
+      "id": "native-group-single-repository-status-observation",
+      "sources": ["report:2026-11-10-native-multi-repo-ci"],
+      "behavior": "Preserve one authoritative path inspection for an ordinary single-repository status query.",
+      "coverageLevel": "runtime",
+      "reproduction": "Candidate 7e10e75 fails the unchanged status observation test in both Node 22 CI and Linux SDK contracts: nativeProjectPaths is called twice instead of once.",
+      "expected": "Probe cleanup receipts through protected Runtime reads and perform the original authoritative path inspection once when no cleanup receipt exists; fresh queries still reject symbolic-link replacement.",
+      "forbidden": "Repeat full Native path inspection for a task without cleanup history, reuse a stale observation, or weaken cleanup receipt validation.",
+      "rootCause": "The multi-repository cleanup precheck resolved all Native project paths before determining whether a cleanup receipt existed.",
+      "tests": [
+        {
+          "file": "test/domains/comet-native/native-sdk-status-observation.test.ts",
+          "namePattern": "^shares cancellation inspection only within one status projection and keeps independent continuations fresh$",
+          "requiredNames": [
+            "shares cancellation inspection only within one status projection and keeps independent continuations fresh"
+          ]
+        }
+      ]
     }
   ]
 }

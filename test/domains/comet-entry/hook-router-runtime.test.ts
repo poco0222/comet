@@ -327,6 +327,35 @@ describe('packaged Hook Router worktree isolation', () => {
     }
   });
 
+  it('enforces Codex command patch boundaries while allowing Shape documents', async () => {
+    await configureChange(primary, 'codex-command-shape', 'shape');
+    const brief = 'comet/changes/codex-command-shape/brief.md';
+    const invoke = (lines: string[]) =>
+      spawnSync(process.execPath, [router, '--platform', 'codex', '--project-root', primary], {
+        cwd: primary,
+        input: JSON.stringify({
+          hook_event_name: 'PreToolUse',
+          tool_name: 'apply_patch',
+          cwd: primary,
+          tool_input: { command: ['*** Begin Patch', ...lines, '*** End Patch'].join('\n') },
+        }),
+        encoding: 'utf8',
+        timeout: 20_000,
+      });
+    const allowed = invoke([`*** Add File: ${brief}`, '+allowed']);
+    expect(allowed.status, allowed.stderr).toBe(0);
+    for (const lines of [
+      ['*** Add File: src/app.ts', '+new'],
+      ['*** Update File: src/app.ts', '@@', '-old', '+new'],
+      ['*** Delete File: src/app.ts'],
+      [`*** Update File: ${brief}`, '*** Move to: src/app.ts', '@@', '-old', '+new'],
+      [`*** Add File: ${brief}`, '+allowed', '*** Add File: src/app.ts', '+new'],
+    ]) {
+      const denied = invoke(lines);
+      expect(denied.status, denied.stderr).toBe(2);
+    }
+  });
+
   it('routes a linked worktree SDK Native change through the packaged Hook', async () => {
     const created = await runNativeCli([
       'new',

@@ -11369,6 +11369,86 @@
           ]
         }
       ]
+    },
+    {
+      "id": "codex-hook-command-payload",
+      "sources": ["report:2026-11-11-codex-hook-compatibility"],
+      "behavior": "Apply workflow and workspace write boundaries to real Codex apply_patch command payloads while allowing authorized Shape document edits.",
+      "coverageLevel": "runtime",
+      "reproduction": "On 9acbeb1, tool_input.command produces no targets or write proposals; the new parser and packaged Router assertions fail. Actual Codex 0.167.0 on macOS allows all nine scripted patches, including seven forbidden writes.",
+      "expected": "Preserve concrete patch proposals, allow own Shape documents, and reject cross-task, original-source and Shape source writes before files change; leave shell command semantics unchanged.",
+      "forbidden": "Allow a forbidden patch because the actual Codex command field was not parsed, or block every patch including permitted documents.",
+      "rootCause": "The shared Hook adapter recognized other patch fields and raw stdin but not the documented apply_patch tool_input.command object.",
+      "tests": [
+        {
+          "file": "test/domains/comet-entry/hook-adapter.test.ts",
+          "namePattern": "^Comet Hook platform adapter normalizes Codex command patches and preserves concrete write proposals$",
+          "requiredNames": [
+            "Comet Hook platform adapter normalizes Codex command patches and preserves concrete write proposals"
+          ]
+        },
+        {
+          "file": "test/domains/comet-entry/hook-adapter.test.ts",
+          "namePattern": "^Comet Hook platform adapter does not interpret a shell command as an apply_patch payload$",
+          "requiredNames": [
+            "Comet Hook platform adapter does not interpret a shell command as an apply_patch payload"
+          ]
+        },
+        {
+          "file": "test/platform/hook-write-proposals.test.ts",
+          "namePattern": "^Hook concrete write proposals reconstructs content from the Codex command field$",
+          "requiredNames": [
+            "Hook concrete write proposals reconstructs content from the Codex command field"
+          ]
+        },
+        {
+          "file": "test/domains/comet-entry/hook-router-runtime.test.ts",
+          "namePattern": "^packaged Hook Router worktree isolation enforces Codex command patch boundaries while allowing Shape documents$",
+          "requiredNames": [
+            "packaged Hook Router worktree isolation enforces Codex command patch boundaries while allowing Shape documents"
+          ]
+        }
+      ],
+      "additionalAcceptance": [
+        {
+          "layer": "real Codex PreToolUse Hook on macOS",
+          "status": "verified",
+          "evidence": ["docs/research/2026-11-11-codex-hook-compatibility.zh.md"]
+        }
+      ]
+    },
+    {
+      "id": "codex-hook-patch-move-destination",
+      "sources": ["report:2026-11-11-codex-hook-compatibility"],
+      "behavior": "Check both the original file and destination when an apply_patch request moves a file.",
+      "coverageLevel": "runtime",
+      "reproduction": "On 9acbeb1, the same move parser assertion omits src/app.ts from a raw or wrapped patch. Real Codex moves the allowed document into source in the old-platform comparison.",
+      "expected": "Keep both paths in patch targets; reject a document-to-source move during Shape and preserve the original file while continuing to allow ordinary document writes.",
+      "forbidden": "Inspect only the permitted source of a move and let the destination bypass workflow or workspace boundaries.",
+      "rootCause": "Patch target extraction recognized Add, Update and Delete File headers but omitted Move to headers.",
+      "tests": [
+        {
+          "file": "test/domains/comet-entry/hook-adapter.test.ts",
+          "namePattern": "^Comet Hook platform adapter includes both source and destination of patch moves$",
+          "requiredNames": [
+            "Comet Hook platform adapter includes both source and destination of patch moves"
+          ]
+        },
+        {
+          "file": "test/domains/comet-entry/hook-router-runtime.test.ts",
+          "namePattern": "^packaged Hook Router worktree isolation enforces Codex command patch boundaries while allowing Shape documents$",
+          "requiredNames": [
+            "packaged Hook Router worktree isolation enforces Codex command patch boundaries while allowing Shape documents"
+          ]
+        }
+      ],
+      "additionalAcceptance": [
+        {
+          "layer": "real Codex apply_patch move and filesystem side effects on macOS",
+          "status": "verified",
+          "evidence": ["docs/research/2026-11-11-codex-hook-compatibility.zh.md"]
+        }
+      ]
     }
   ]
 }

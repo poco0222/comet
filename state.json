@@ -1,6 +1,12 @@
 {
-  "status": "up_to_date",
   "base": "21e2b735cb11ffd0fb943328c1cc974869834bd7",
-  "upstream": "a61a2e5b4766e1ad62377dec598e402560a259b6",
-  "target_branch": "feat/native-multi-repo-workspace"
+  "upstream": "356114427f28e2fa5bcb9e0242d2c75347693523",
+  "target_branch": "feat/native-multi-repo-workspace",
+  "controller_sha": "e1e5a73b98e68b67c3da45257567e4e334c0aa2b",
+  "candidate": "af0c025af3fbf3dfea89eb6a9f57b42316c2987b",
+  "candidate_branch": "automation/upstream-21e2b735cb11-356114427f28",
+  "status": "dispatching",
+  "cloud": "pending",
+  "macos": "pending",
+  "queued_at": "2026-11-11T14:34:11.156261+00:00"
 }

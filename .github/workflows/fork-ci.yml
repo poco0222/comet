@@ -1,0 +1,513 @@
+name: Fork candidate CI
+run-name: Fork checks ${{ inputs.candidate }} base ${{ inputs.base }}
+
+on:
+  workflow_dispatch:
+    inputs:
+      candidate:
+        description: Exact merge commit to validate
+        required: true
+        type: string
+      base:
+        description: Accepted fork commit before merging
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: fork-ci-${{ inputs.candidate }}
+  cancel-in-progress: false
+
+jobs:
+  workflow-lint:
+    name: Workflow lint
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          ref: ${{ inputs.candidate }}
+          persist-credentials: false
+      - name: Validate GitHub Actions workflows
+        run: docker run --rm -v "$PWD:/repo" -w /repo rhysd/actionlint:1.7.7@sha256:887a259a5a534f3c4f36cb02dca341673c6089431057242cdc931e9f133147e9 -color
+
+  quality:
+    name: Quality and coverage
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+          ref: ${{ inputs.candidate }}
+      - uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271 # v6.0.9
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24
+          cache: pnpm
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
+        with:
+          python-version: '3.12'
+      - uses: astral-sh/setup-uv@11f9893b081a58869d3b5fccaea48c9e9e46f990 # v8.3.2
+        with:
+          version: '0.11.29'
+      - run: uv sync --locked --extra dev --extra langsmith
+        working-directory: eval
+      - run: pnpm install --frozen-lockfile --ignore-scripts
+      - name: Preserve baseline SDK recovery fixtures
+        env:
+          SDK_BASE_REF: ${{ inputs.base }}
+        run: pnpm check:sdk-fixtures --base "$SDK_BASE_REF"
+      - name: Verify generated runtimes are current
+        run: pnpm check:generated
+      - run: pnpm format:check
+      - run: pnpm lint
+      - run: pnpm build
+      - run: pnpm check:sdk-api
+      - name: Verify build is deterministic
+        run: git diff --exit-code -- assets
+      - name: Verify external OpenSpec CLI compatibility
+        run: pnpm test:openspec-upstream
+      - id: tests
+        run: pnpm test:coverage --reporter=default --reporter=json --outputFile.json=coverage/vitest-results.json
+      - name: Upload coverage report
+        if: always() && steps.tests.outcome != 'skipped'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: coverage
+          path: coverage/
+          if-no-files-found: error
+      - name: Upload coverage to Codecov
+        if: github.event_name == 'push' || github.event.pull_request.head.repo.fork == false
+        uses: codecov/codecov-action@fb8b3582c8e4def4969c97caa2f19720cb33a72f # v7.0.0
+        with:
+          token: ${{ secrets.CODECOV_TOKEN }}
+          files: ./coverage/lcov.info
+          flags: unittests
+          fail_ci_if_error: false
+
+  core-regressions:
+    name: Badcase regressions (${{ matrix.os }}${{ matrix.shards > 1 && format(', shard {0}/{1}', matrix.shard, matrix.shards) || '' }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 180
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            shard: 1
+            shards: 1
+          - os: windows-latest
+            shard: 1
+            shards: 4
+          - os: windows-latest
+            shard: 2
+            shards: 4
+          - os: windows-latest
+            shard: 3
+            shards: 4
+          - os: windows-latest
+            shard: 4
+            shards: 4
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+          ref: ${{ inputs.candidate }}
+      - uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271 # v6.0.9
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile --ignore-scripts
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
+        with:
+          python-version: '3.12'
+      - uses: astral-sh/setup-uv@11f9893b081a58869d3b5fccaea48c9e9e46f990 # v8.3.2
+        with:
+          version: '0.11.29'
+      - run: uv sync --locked --extra dev --extra langsmith
+        working-directory: eval
+      - name: Validate badcase registration and preserve baseline
+        env:
+          BADCASE_BASE_SHA: ${{ inputs.base }}
+        run: pnpm check:badcase-registration
+      - run: pnpm build
+      - run: pnpm test:core-regressions --shard=${{ matrix.shard }}/${{ matrix.shards }}
+      - name: Preserve core regression evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: core-regressions-${{ matrix.os }}-${{ matrix.shard }}
+          path: coverage/core-regressions/
+          if-no-files-found: error
+
+  node-compatibility:
+    name: Node 22 compatibility (shard ${{ matrix.shard }}/2)
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2]
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          fetch-depth: 0
+          ref: ${{ inputs.candidate }}
+          persist-credentials: false
+      - uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271 # v6.0.9
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 22.22.2
+          cache: pnpm
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
+        with:
+          python-version: '3.12'
+      - uses: astral-sh/setup-uv@11f9893b081a58869d3b5fccaea48c9e9e46f990 # v8.3.2
+        with:
+          version: '0.11.29'
+      - run: uv sync --locked --extra dev --extra langsmith
+        working-directory: eval
+      - run: pnpm install --frozen-lockfile --ignore-scripts
+      - run: pnpm build
+      - name: Verify external OpenSpec CLI compatibility
+        run: pnpm test:openspec-upstream
+      - name: Run the complete Node 22 suite
+        id: node22-tests
+        run: pnpm test --shard=${{ matrix.shard }}/2 --reporter=default --reporter=json --outputFile.json=coverage/node22/results.json
+      - name: Upload Node 22 test results
+        if: always() && steps.node22-tests.outcome != 'skipped'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: node22-results-shard-${{ matrix.shard }}-of-2
+          path: coverage/node22/
+          if-no-files-found: error
+
+  runtime-smoke:
+    name: Runtime smoke (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          ref: ${{ inputs.candidate }}
+          persist-credentials: false
+      - uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271 # v6.0.9
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile --ignore-scripts
+      - run: pnpm build
+      - run: pnpm test:native-parallel
+      - name: Workspace Runtime identity and storage regressions
+        run: >-
+          pnpm exec vitest run test/platform/workspace-runtime.test.ts test/domains/workflow-contract/workspace-runtime.test.ts
+      - name: DSH Hook installation and denial regressions
+        run: >-
+          pnpm exec vitest run test/domains/skill/dsh-hooks.test.ts test/platform/dsh-profiles.test.ts test/domains/comet-entry/hook-adapter.test.ts test/domains/comet-entry/hook-router-runtime.test.ts
+      - name: Native check process and recovery regressions
+        run: >-
+          pnpm exec vitest run test/platform/process/process-identity.test.ts test/platform/process/spawn-command.test.ts test/platform/process/node-cli-command.test.ts test/platform/process/owned-command-termination.test.ts test/domains/comet-native/native-check-registration.test.ts test/domains/comet-native/native-check-executor.test.ts test/domains/comet-native/native-check-executor-termination.test.ts test/domains/comet-native/native-portable-check-termination.test.ts test/domains/comet-native/native-sdk-check-termination.test.ts test/domains/comet-native/native-supervisor-check-process.test.ts test/domains/comet-native/native-supervisor-integration-execution.test.ts test/domains/comet-native/native-supervisor-legacy-diagnostics.test.ts --maxWorkers=1
+      - run: pnpm test:runtime-smoke
+      - name: Verify Eval stop and cleanup recovery on the host platform
+        run: >-
+          pnpm exec vitest run test/domains/eval/eval-container-cleanup.test.ts test/domains/eval/eval-process-cleanup-proof.test.ts test/app/eval-run-lifecycle.test.ts --maxWorkers=1
+      - name: Verify Eval cancellation against real Docker containers
+        if: matrix.os == 'ubuntu-latest'
+        env:
+          COMET_EVAL_DOCKER_INTEGRATION: '1'
+        run: |
+          docker pull alpine:3.21
+          pnpm exec vitest run test/domains/eval/eval-container-cleanup.integration.test.ts --maxWorkers=1
+
+  package-e2e:
+    name: Package install (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          ref: ${{ inputs.candidate }}
+          persist-credentials: false
+      - uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271 # v6.0.9
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24
+          cache: pnpm
+      - name: Use the real host temporary directory on macOS
+        if: matrix.os == 'macos-latest'
+        run: node -e "require('node:fs').appendFileSync(process.env.GITHUB_ENV, 'TMPDIR=' + require('node:fs').realpathSync(require('node:os').tmpdir()) + '\n')"
+      - name: Use the real host temporary directory on Windows
+        if: matrix.os == 'windows-latest'
+        run: node -e "const dir=require('node:fs').realpathSync.native(require('node:os').tmpdir()); require('node:fs').appendFileSync(process.env.GITHUB_ENV, 'TEMP=' + dir + '\nTMP=' + dir + '\n')"
+      - run: pnpm install --frozen-lockfile --ignore-scripts
+      - run: pnpm build
+      - run: pnpm test:package-e2e
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        if: matrix.os == 'ubuntu-latest'
+        with:
+          node-version: 22.16.0
+      - name: Verify package on the minimum supported Node version
+        if: matrix.os == 'ubuntu-latest'
+        run: pnpm test:package-e2e
+
+  eval-static:
+    name: Eval static tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: eval
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          ref: ${{ inputs.candidate }}
+          persist-credentials: false
+      - uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271 # v6.0.9
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile --ignore-scripts
+        working-directory: .
+      - name: Compile Runtime modules for Eval contracts
+        run: pnpm exec tsc --pretty false
+        working-directory: .
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
+        with:
+          python-version: '3.12'
+      - uses: astral-sh/setup-uv@11f9893b081a58869d3b5fccaea48c9e9e46f990 # v8.3.2
+        with:
+          version: '0.11.29'
+          enable-cache: true
+          cache-dependency-glob: eval/uv.lock
+      - run: uv sync --locked --extra dev --extra langsmith
+      - run: uv run ruff check local/tests scaffold local/scripts langsmith
+      - run: uv run pytest -q local/tests/scaffold local/tests/tasks/test_validation_scripts.py --junitxml=eval-static.xml
+      - name: Require real Runtime API cases to pass
+        shell: python {0}
+        run: |
+          import xml.etree.ElementTree as ET
+
+          cases = ET.parse("eval-static.xml").findall(".//testcase")
+          required = (
+              "test_current_cli_recovery_to_archive",
+              "test_current_cli_completes_all_three_profiles_and_preserves_parked",
+              "test_existing_layout_validator_accepts_delivery_and_rejects_history_drift",
+              "test_extract_loop_binds_trusted_sdk_recovery_observation",
+              "test_current_checkpoint_api_validates_generated_v1_and_v2_content",
+              "test_current_runtime_owner_api_uses_workspace_identity_not_fence_target[foreign-fence]",
+              "test_current_runtime_owner_api_uses_workspace_identity_not_fence_target[history-owner]",
+              "test_current_runtime_owner_api_uses_workspace_identity_not_fence_target[owner-symlink]",
+              "test_current_runtime_owner_api_uses_workspace_identity_not_fence_target[runtime-symlink]",
+          )
+          for name in required:
+              matches = [case for case in cases if case.get("name") == name]
+              assert matches, f"Missing required Runtime API test: {name}"
+              assert all(
+                  case.find("skipped") is None
+                  and case.find("failure") is None
+                  and case.find("error") is None
+                  for case in matches
+              ), f"Required Runtime API test did not pass: {name}"
+          print(f"Verified {len(required)} real Runtime API cases without skips")
+
+  eval-windows:
+    name: Eval Windows artifact safety
+    runs-on: windows-latest
+    timeout-minutes: 10
+    defaults:
+      run:
+        working-directory: eval
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          ref: ${{ inputs.candidate }}
+          persist-credentials: false
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
+        with:
+          python-version: '3.12'
+      - uses: astral-sh/setup-uv@11f9893b081a58869d3b5fccaea48c9e9e46f990 # v8.3.2
+        with:
+          version: '0.11.29'
+          enable-cache: true
+          cache-dependency-glob: eval/uv.lock
+      - run: uv sync --locked --no-default-groups
+      - name: Exercise offline artifact collection on native Windows
+        id: artifact-tests
+        run: >-
+          uv run --locked --no-sync pytest -q local/tests/scaffold/test_workspace_artifacts.py local/tests/scaffold/test_workspace_artifacts_windows.py local/tests/scaffold/test_logging.py local/tests/scaffold/test_profiles.py --junitxml=windows-artifacts.xml
+      - name: Require Windows safety cases to execute
+        shell: python {0}
+        run: |
+          import sys
+          import xml.etree.ElementTree as ET
+
+          assert sys.platform == "win32", "Windows artifact checks require a native Windows runner"
+          cases = ET.parse("windows-artifacts.xml").findall(".//testcase")
+          required = (
+              "test_windows_reads_unicode_nested_text",
+              "test_windows_reads_long_path",
+              "test_windows_skips_junctions",
+              "test_windows_releases_handles",
+              "test_windows_rejects_junction_root",
+              "test_windows_skips_sharing_conflict",
+              "test_windows_api_errors_are_environment_failures",
+          )
+          for name in required:
+              matches = [case for case in cases if case.get("name", "").split("[", 1)[0] == name]
+              assert matches, f"Missing required Windows test: {name}"
+              assert all(
+                  case.find("skipped") is None
+                  and case.find("failure") is None
+                  and case.find("error") is None
+                  for case in matches
+              ), f"Required Windows test did not pass: {name}"
+      - name: Upload Windows artifact test results
+        if: always() && steps.artifact-tests.outcome != 'skipped'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: eval-windows-artifacts
+          path: eval/windows-artifacts.xml
+          if-no-files-found: error
+
+  dashboard-e2e:
+    name: Dashboard browser E2E
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          ref: ${{ inputs.candidate }}
+          persist-credentials: false
+      - uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271 # v6.0.9
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile --ignore-scripts
+      - run: pnpm exec playwright install --only-shell chromium
+      - run: pnpm test:dashboard-e2e
+      - name: Upload Playwright report
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: playwright-report
+          path: |
+            coverage/playwright-report/
+            coverage/playwright-results/
+          if-no-files-found: warn
+
+  sdk-contracts:
+    name: SDK contracts (${{ matrix.os }}, Node ${{ matrix.node }}${{ matrix.shards > 1 && format(', shard {0}/{1}', matrix.shard, matrix.shards) || '' }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: ${{ matrix.os == 'windows-latest' && 90 || 60 }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            node: '22.16.0'
+            shard: 1
+            shards: 1
+          - os: windows-latest
+            node: '24'
+            shard: 1
+            shards: 8
+          - os: windows-latest
+            node: '24'
+            shard: 2
+            shards: 8
+          - os: windows-latest
+            node: '24'
+            shard: 3
+            shards: 8
+          - os: windows-latest
+            node: '24'
+            shard: 4
+            shards: 8
+          - os: windows-latest
+            node: '24'
+            shard: 5
+            shards: 8
+          - os: windows-latest
+            node: '24'
+            shard: 6
+            shards: 8
+          - os: windows-latest
+            node: '24'
+            shard: 7
+            shards: 8
+          - os: windows-latest
+            node: '24'
+            shard: 8
+            shards: 8
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+          ref: ${{ inputs.candidate }}
+      - uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271 # v6.0.9
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: ${{ matrix.node }}
+          cache: pnpm
+      - name: Use the real host temporary directory on macOS
+        if: matrix.os == 'macos-latest'
+        run: node -e "require('node:fs').appendFileSync(process.env.GITHUB_ENV, 'TMPDIR=' + require('node:fs').realpathSync(require('node:os').tmpdir()) + '\n')"
+      - name: Use the real host temporary directory on Windows
+        if: matrix.os == 'windows-latest'
+        run: node -e "const dir=require('node:fs').realpathSync.native(require('node:os').tmpdir()); require('node:fs').appendFileSync(process.env.GITHUB_ENV, 'TEMP=' + dir + '\nTMP=' + dir + '\n')"
+      - run: pnpm install --frozen-lockfile --ignore-scripts
+      - run: pnpm build
+      - name: Exercise SDK protocol, application lifecycle, Creator and domain adapters
+        id: sdk-tests
+        run: pnpm test:sdk --shard=${{ matrix.shard }}/${{ matrix.shards }} ${{ matrix.os == 'windows-latest' && '--maxWorkers=1 --exclude test/domains/comet-classic/classic-application.test.ts' || '' }} --reporter=default --reporter=json --outputFile.json=coverage/sdk/results.json
+      - name: Exercise the Windows Classic lifecycle without competing SDK subprocesses
+        id: classic-sdk-tests
+        if: ${{ !cancelled() && matrix.os == 'windows-latest' && matrix.shard == 1 && steps.sdk-tests.outcome != 'skipped' }}
+        run: pnpm exec vitest run test/domains/comet-classic/classic-application.test.ts --maxWorkers=1 --reporter=default --reporter=json --outputFile.json=coverage/sdk/classic-results.json
+      - name: Upload SDK test results
+        if: always() && steps.sdk-tests.outcome != 'skipped'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: sdk-results-${{ matrix.os }}-node-${{ matrix.node }}-shard-${{ matrix.shard }}-of-${{ matrix.shards }}
+          path: coverage/sdk/
+          if-no-files-found: error
+
+  ci-required:
+    name: CI required
+    if: always()
+    needs:
+      - workflow-lint
+      - quality
+      - core-regressions
+      - node-compatibility
+      - runtime-smoke
+      - package-e2e
+      - eval-static
+      - eval-windows
+      - dashboard-e2e
+      - sdk-contracts
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Require every CI job to pass
+        env:
+          NEEDS_CONTEXT: ${{ toJson(needs) }}
+        run: |
+          node -e "const jobs=Object.values(JSON.parse(process.env.NEEDS_CONTEXT)); if(jobs.some(({result})=>result!=='success')) { console.error(jobs); process.exit(1); }"

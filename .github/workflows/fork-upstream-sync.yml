@@ -1,0 +1,40 @@
+name: Fork upstream sync
+
+on:
+  schedule:
+    - cron: '23 */6 * * *'
+  workflow_dispatch:
+  workflow_run:
+    workflows: ['Fork candidate CI']
+    types: [completed]
+
+permissions:
+  contents: write
+  actions: write
+  statuses: read
+
+concurrency:
+  group: fork-upstream-sync
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    if: github.repository == 'poco0222/comet'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          ref: master
+          fetch-depth: 0
+      - name: Test synchronization safeguards
+        run: python3 -m unittest discover -s .github/fork-sync -p 'test_*.py' -v
+      - name: Validate workflow definitions
+        run: docker run --rm -v "$PWD:/repo" -w /repo rhysd/actionlint:1.7.7@sha256:887a259a5a534f3c4f36cb02dca341673c6089431057242cdc931e9f133147e9 -color
+      - name: Check upstream and advance validated candidates
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          python3 .github/fork-sync/sync.py

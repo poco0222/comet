@@ -1,15 +1,12 @@
 {
-  "base": "21e2b735cb11ffd0fb943328c1cc974869834bd7",
+  "base": "468e93d1dbc7614786ed8e69d085bdfa030817b4",
   "upstream": "356114427f28e2fa5bcb9e0242d2c75347693523",
   "target_branch": "feat/native-multi-repo-workspace",
   "controller_sha": "e1e5a73b98e68b67c3da45257567e4e334c0aa2b",
-  "candidate": "af0c025af3fbf3dfea89eb6a9f57b42316c2987b",
-  "candidate_branch": "automation/upstream-21e2b735cb11-356114427f28",
-  "status": "stale",
-  "cloud": "failure",
+  "candidate": "4a643f6defd7bc8e8030d1e7c0fef974ae21419b",
+  "candidate_branch": "automation/upstream-468e93d1dbc7-356114427f28",
+  "status": "dispatching",
+  "cloud": "pending",
   "macos": "pending",
-  "queued_at": "2026-11-11T14:34:11.156261+00:00",
-  "ci_run_id": 43039735382,
-  "ci_url": "https://github.com/poco0222/comet/actions/runs/43039735382",
-  "reason": "功能分支已前进，旧检查不能用于新的合并。"
+  "queued_at": "2026-11-12T23:43:01.422427+00:00"
 }

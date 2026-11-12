@@ -63,6 +63,7 @@ import {
   nativeSupervisorIntegrationWorktree,
 } from './native-supervisor-workspace.js';
 import { toNativePortableText } from './native-portable-text.js';
+import { isNativeCodeGraphCachePath } from './native-sensitive-paths.js';
 import {
   nativeCheckInputSnapshot,
   nativeCandidateInputGate,
@@ -71,6 +72,7 @@ import {
   nativeRawCandidateHash,
   saveNativeRawInput,
   readNativeRawInput,
+  readNativeInputExclusions,
   nativeRawInputChanges,
   type NativeRawInputSnapshot,
 } from './native-portable-checks.js';
@@ -517,6 +519,13 @@ export async function observeNativeSdkInputs(run: Readonly<WorkflowRun>, project
     throw new NativeSdkCheckInputSnapshotError(
       `原始输入无法完整比较：${[...before.diagnostics, ...current.diagnostics].join('；')}`,
     );
+  if (
+    before.exclusionHash !== current.exclusionHash ||
+    candidateBefore.exclusionHash !== current.exclusionHash
+  )
+    throw new NativeSdkCandidateDriftError(
+      'Native 输入排除规则已变化；保留原 Run 和 Shape，由 Builder 按当前范围提交后继候选',
+    );
   const changesSinceCheck = rawInputChanges(before, current);
   const changedDuringCheck = rawInputChanges(candidateBefore, before);
   const changedDuringCheckPaths = new Set(changedDuringCheck.map((change) => change.path));
@@ -527,7 +536,7 @@ export async function observeNativeSdkInputs(run: Readonly<WorkflowRun>, project
     ...new Map(
       [...changesSinceCheck, ...candidateChanges].map((change) => [JSON.stringify(change), change]),
     ).values(),
-  ];
+  ].filter((change) => !isNativeCodeGraphCachePath(change.path));
   return {
     sourceActionId: original.id,
     beforeRef,
@@ -1094,6 +1103,7 @@ async function hasNativeCheckInputJudgment(options: {
       !original.complete ||
       !options.snapshot.complete ||
       original.projectRoot !== options.snapshot.projectRoot ||
+      original.exclusionHash !== options.snapshot.exclusionHash ||
       original.contextHash !== options.snapshot.contextHash
     )
       return false;
@@ -1659,6 +1669,10 @@ async function validatedCheckResults(options: {
       plans,
       managedArtifactRoot: paths.artifactRoot,
     };
+    if (!output.rawInput && (await readNativeInputExclusions(snapshotOptions.projectRoot)).hash)
+      throw new NativeSdkCheckInputDriftError(
+        'Native 旧检查缺少输入排除范围证明；请通过原工作流按当前范围重新验收',
+      );
     const rawCurrent = output.rawInput
       ? (options.observedInputs ??
         (await nativeRawInputSnapshot({ ...snapshotOptions, previous: rawProof?.after })))
@@ -1728,6 +1742,13 @@ async function validatedCheckResults(options: {
           original.projectRoot !== rawCurrent!.projectRoot
         )
           throw new Error('Native 原始输入记录与检查收据不匹配');
+        if (
+          originalBefore.exclusionHash !== original.exclusionHash ||
+          original.exclusionHash !== rawCurrent!.exclusionHash
+        )
+          throw new NativeSdkCheckInputDriftError(
+            'Native 输入排除规则已变化；保留原检查记录，须按当前范围建立新证据',
+          );
         if (snapshot.after !== current.contentFingerprint) {
           retained = (
             await Promise.all(
@@ -2475,6 +2496,7 @@ export async function nativeSdkCandidateInputGate(options: {
         })
       : candidate;
   }
+  if ((await readNativeInputExclusions(executionRoot)).hash) return null;
   const gateOptions = {
     projectRoot: executionRoot,
     candidateId: state.builder_handoff.candidate_id,

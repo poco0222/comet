@@ -22,6 +22,21 @@
 - `workflow-contract/edit-review.ts` 保存原始变化和当前 Agent 判断；`comet edit-review observe` 合并连续保存，`record` 明确记录语义、影响及保留的检查。判断只覆盖已绑定的内容，再次编辑后只补处理新增变化。
 - `native-recovery.ts` 投影恢复契约；`native-command-recovery.ts` 将只读文件锁观察、现有归档收尾结果与 continuation 汇总到同一结构。状态转换仍由原领域 Runtime 执行。
 
+### 排除本机配置
+
+项目需要避免读取某些本机配置时，在开始 Build 前把路径登记到 `.comet/config.yaml`：
+
+```yaml
+native:
+  snapshot:
+    exclude:
+      - 'server/**/application-prod.yml'
+```
+
+路径相对于项目根，多仓任务使用协调根下的仓库路径前缀。新任务工作树和更新安装会保留自定义排除项。规则在候选和检查输入读取前生效，检查收据同时绑定该范围。修改规则后沿用原任务，按新范围提交候选并重新建立适用的检查证据。Git 的忽略规则仍用于枚举文件，项目命令仍自行读取运行所需的配置。
+
+CodeGraph 的本地数据库及其临时文件由 Runtime 自动跳过。已完成、仅涉及这些文件的非行为变更复核保留在历史中。多仓交付会把排除路径的未暂存改动留在原工作树。如果暂存内容已经包含这些改动，交付会在创建提交前停止。
+
 ## 修改后的推进判定
 
 | 当前修改                            | 推进方式                              | 需要重新建立的证据                                     |

@@ -1,4 +1,5 @@
 import { execFileSync, spawnSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import { promises as fs } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -36,8 +37,18 @@ import { fixtureAcceptanceReview } from '../../helpers/native-builder-acceptance
 import type { NativeCheckPlan } from '../../../domains/comet-native/native-check-executor.js';
 import { nativeProjectPaths } from '../../../domains/comet-native/native-paths.js';
 import { hasNativeSdkPortableStopEvidence } from '../../../domains/comet-native/native-sdk-check-execution.js';
-import { nativeCheckInputSnapshot } from '../../../domains/comet-native/native-portable-checks.js';
+import {
+  nativeCheckInputSnapshot,
+  readNativeRawInput,
+} from '../../../domains/comet-native/native-portable-checks.js';
 import { nativeSdkCheckPlans } from '../../../domains/comet-native/native-sdk-checks.js';
+import { nativeEditReviewScope } from '../../../domains/comet-native/native-edit-review-scope.js';
+import { runNativeEditReviewCommand } from '../../../domains/comet-native/native-edit-review-command.js';
+import {
+  inspectEditReviews,
+  prepareObservedEditReview,
+  recordEditReview,
+} from '../../../domains/workflow-contract/edit-review.js';
 
 const roots: string[] = [];
 // Windows 上未修改基线的双工作区修复案例需约 125 秒；保留全部断言并给完整事务留出执行时间。
@@ -64,6 +75,8 @@ async function blockedFixture(
     generatedEmbedded?: boolean;
     directPass?: boolean;
     nonGitEnvironment?: boolean;
+    inputExcludes?: string[];
+    codeGraphCache?: boolean;
     documentWrites?: 'allow' | 'revert';
   } = {},
 ) {
@@ -96,7 +109,13 @@ async function blockedFixture(
   const config = defaultProjectConfig('docs', 'en');
   await writeProjectConfig(projectRoot, {
     ...config,
-    native: { ...config.native, document_writes: options.documentWrites ?? 'revert' },
+    native: {
+      ...config.native,
+      document_writes: options.documentWrites ?? 'revert',
+      ...(options.inputExcludes
+        ? { snapshot: { ...config.native.snapshot, exclude: options.inputExcludes } }
+        : {}),
+    },
   });
   await fs.writeFile(
     path.join(change, 'brief.md'),
@@ -143,6 +162,11 @@ async function blockedFixture(
           `${options.bomSource ? '\ufeff' : ''}export const value = 1;\n`,
         );
       await fs.writeFile(path.join(child, '.env.development'), 'VUE_APP_BASE_API=/api\n');
+      if (options.codeGraphCache) {
+        await fs.writeFile(path.join(child, '.gitignore'), '.codegraph/\n');
+        await fs.mkdir(path.join(child, '.codegraph'));
+        await fs.writeFile(path.join(child, '.codegraph/codegraph.db'), 'initial index');
+      }
       git(['add', '.'], child);
       git(['commit', '-qm', 'synthetic environment'], child);
     }
@@ -536,6 +560,8 @@ async function archiveReadyFixture(
     verificationChecks?: NativeCheckPlan[];
     nonGitEnvironment?: boolean;
     bundleCommands?: boolean;
+    inputExcludes?: string[];
+    codeGraphCache?: boolean;
   } = {},
 ) {
   const f = await blockedFixture({
@@ -546,6 +572,8 @@ async function archiveReadyFixture(
     generatedEmbedded: options.generatedEmbedded,
     verificationChecks: options.verificationChecks,
     nonGitEnvironment: options.nonGitEnvironment,
+    inputExcludes: options.inputExcludes,
+    codeGraphCache: options.codeGraphCache,
   });
   if (!options.directPass) {
     const resume = (await alternatives(f)).find(({ name }) => name === 'resolve-verifier-blocker')!;
@@ -795,6 +823,123 @@ describe('blocked Verifier recovery command contract', () => {
     expect((await f.dispatch({ operation: 'inspect', runId: f.name })).state).toEqual(
       completed.state,
     );
+  });
+
+  it('excludes configured files from SDK receipts and refuses Archive when the exclusion policy changes', async () => {
+    const f = await archiveReadyFixture({
+      directPass: true,
+      nonGitEnvironment: true,
+      inputExcludes: ['server/.env.development'],
+      verificationChecks: [
+        {
+          id: 'source',
+          name: 'Check source',
+          executable: process.execPath,
+          argv: ['--check', 'server/index.js'],
+          cwdRef: '.',
+          timeoutMs: 5000,
+          repeatable: true,
+        },
+      ],
+    });
+    const run = await f.dispatch({ operation: 'inspect', runId: f.name });
+    const check = run.outputs['verify.checks'].value as { rawInput: { afterRef: string } };
+    const ref = check.rawInput.afterRef;
+    const snapshot = await readNativeRawInput(
+      resolveWorkspaceRuntimeRootSync(f.projectRoot),
+      path.posix.dirname(ref),
+      ref,
+    );
+    expect(snapshot.complete).toBe(true);
+    expect(snapshot.files.map((file) => file.path)).toContain('client/.env.development');
+    expect(snapshot.files.map((file) => file.path)).not.toContain('server/.env.development');
+    const preview = async () =>
+      JSON.parse((await f.native(['archive', f.name, '--dry-run'])).stdout!).data.ready;
+    await fs.writeFile(path.join(f.projectRoot, 'server/.env.development'), 'fixture change\n');
+    expect(await preview()).toBe(true);
+    const client = path.join(f.projectRoot, 'client/.env.development');
+    await fs.writeFile(client, 'different application input\n');
+    expect(await preview()).toBe(false);
+    await fs.writeFile(client, 'VUE_APP_BASE_API=/api\n');
+    const config = path.join(f.projectRoot, '.comet/config.yaml');
+    const original = await fs.readFile(config, 'utf8');
+    expect(original).toContain('server/.env.development');
+    await fs.writeFile(config, original.replace('server/.env.development', 'server/.env*'));
+    expect(await preview()).toBe(false);
+    await expect(
+      runNativeEditReviewCommand({
+        projectRoot: f.projectRoot,
+        name: f.name,
+        operation: 'observe',
+        sessionId: 'scope-review',
+      }),
+    ).rejects.toThrow(/输入排除规则已变化/u);
+    expect((await f.dispatch({ operation: 'inspect', runId: f.name })).revision).toBe(run.revision);
+    await fs.writeFile(config, original);
+    const archived = await f.native(['archive', f.name]);
+    expect(archived.exitCode, archived.stdout ?? archived.stderr).toBe(0);
+  });
+
+  it('archives an accepted non-Git project after only CodeGraph cache files change', async () => {
+    const f = await archiveReadyFixture({
+      directPass: true,
+      nonGitEnvironment: true,
+      codeGraphCache: true,
+      verificationChecks: [
+        {
+          id: 'source',
+          name: 'Check source',
+          executable: process.execPath,
+          argv: ['--check', 'server/index.js'],
+          cwdRef: '.',
+          timeoutMs: 5000,
+          repeatable: true,
+        },
+      ],
+    });
+    const run = await f.dispatch({ operation: 'inspect', runId: f.name });
+    const scope = {
+      ...nativeEditReviewScope(
+        await nativeProjectPaths(f.projectRoot, 'docs', { readOnly: true }),
+        parseNativePortableState(run.state),
+      ),
+      judgment: 'agent' as const,
+    };
+    const cacheRef = 'server/.codegraph/codegraph.db';
+    const cacheFile = path.join(f.projectRoot, cacheRef);
+    const digest = (value: string) => createHash('sha256').update(value).digest('hex');
+    await fs.writeFile(cacheFile, 'reviewed index');
+    const proposal = await prepareObservedEditReview(scope, [
+      {
+        path: cacheRef,
+        beforeHash: digest('initial index'),
+        afterHash: digest('reviewed index'),
+      },
+    ]);
+    await recordEditReview(
+      scope,
+      {
+        proposalHash: proposal.proposalHash,
+        decision: 'non-behavioral',
+        summary: 'The local index changed.',
+      },
+      { kind: 'runtime-agent', executionRef: 'legacy-cache-review' },
+    );
+    await fs.writeFile(cacheFile, 'updated index');
+    await fs.writeFile(path.join(f.projectRoot, 'server/.codegraph/codegraph.db-wal'), 'wal');
+    await fs.writeFile(path.join(f.projectRoot, 'client/.codegraph/writer.pid'), '1234');
+    const archived = await f.native(['archive', f.name]);
+    expect(archived.exitCode, archived.stdout ?? archived.stderr).toBe(0);
+    expect((await f.dispatch({ operation: 'inspect', runId: f.name })).state).toMatchObject({
+      archived: true,
+      status: 'done',
+    });
+    expect(await inspectEditReviews(scope)).toEqual([
+      expect.objectContaining({
+        proposalHash: proposal.proposalHash,
+        receipt: expect.objectContaining({ decision: 'non-behavioral' }),
+      }),
+    ]);
   });
 
   it('recovers a branch rename followed by implementation changes without replaying one-shot checks', async () => {

@@ -16,6 +16,10 @@ import {
 import type { NativeCheckPlan } from '../../../domains/comet-native/native-check-executor.js';
 import { nativeProjectPaths } from '../../../domains/comet-native/native-paths.js';
 import {
+  defaultProjectConfig,
+  writeProjectConfig,
+} from '../../../domains/comet-native/native-config.js';
+import {
   initializeNativeWorkspaceGroupSpecs,
   publishNativeWorkspaceGroupSpecs,
 } from '../../../domains/comet-native/native-workspace-group-specs.js';
@@ -70,6 +74,50 @@ describe('Native workspace group Git delivery', () => {
   });
   afterEach(async () => {
     await fs.rm(temporary, { recursive: true, force: true });
+  });
+
+  it('blocks changes to excluded tracked inputs before creating any delivery commit', async () => {
+    const mobile = group.plan.repositories[2];
+    const config = defaultProjectConfig();
+    config.native.snapshot.exclude = ['mobile/source.txt', 'mobile/ private.yml'];
+    await writeProjectConfig(group.plan.projectRoot, config);
+    const before = group.plan.repositories.map((entry) =>
+      runGitCommand(entry.worktreeRoot, ['rev-parse', 'HEAD']),
+    );
+    const target = path.join(mobile.worktreeRoot, 'source.txt');
+    await fs.writeFile(target, 'unverified\n');
+    runGitCommand(mobile.worktreeRoot, ['add', 'source.txt']);
+    const prepareScoped = () =>
+      prepareNativeWorkspaceGroupDelivery({
+        group,
+        candidateId: 'accepted-candidate',
+        commitMessage: 'feat: scoped delivery',
+        checks: [{ ...checks[0], argv: ['--version'] }],
+      });
+    await expect(prepareScoped()).rejects.toThrow(
+      'Changed file is excluded from accepted delivery inputs: mobile/source.txt',
+    );
+    for (const [i, entry] of group.plan.repositories.entries())
+      expect(runGitCommand(entry.worktreeRoot, ['rev-parse', 'HEAD'])).toBe(before[i]);
+    expect(runGitCommand(mobile.worktreeRoot, ['diff', '--cached', '--name-only'])).toBe(
+      'source.txt',
+    );
+
+    await fs.writeFile(target, 'old\n');
+    runGitCommand(mobile.worktreeRoot, ['add', 'source.txt']);
+    await fs.writeFile(path.join(mobile.worktreeRoot, ' private.yml'), 'synthetic local config\n');
+    runGitCommand(mobile.worktreeRoot, ['add', ' private.yml']);
+    await expect(prepareScoped()).rejects.toThrow(
+      'Changed file is excluded from accepted delivery inputs: mobile/ private.yml',
+    );
+    runGitCommand(mobile.worktreeRoot, ['rm', '--force', '--', ' private.yml']);
+    await fs.writeFile(target, 'local-only\n');
+    const ready = await prepareScoped();
+    expect(ready.status).toBe('ready');
+    const merged = await applyNativeWorkspaceGroupDelivery(group, ready.planHash!);
+    expect(merged.status).toBe('merged');
+    expect(runGitCommand(mobile.sourceRoot, ['rev-parse', 'HEAD'])).toBe(before[2]);
+    expect(await fs.readFile(target, 'utf8')).toBe('local-only\n');
   });
 
   it('checks combined merged trees before updating targets and does not commit unchanged repositories', async () => {

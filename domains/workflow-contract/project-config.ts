@@ -156,6 +156,11 @@ export function mergeWorkflowNativeSnapshotExcludes(exclude: readonly string[]):
   return merged;
 }
 
+export function workflowNativeCustomSnapshotExcludes(exclude: readonly string[]): string[] {
+  const defaults = new Set<string>(DEFAULT_WORKFLOW_NATIVE_SNAPSHOT_EXCLUDES);
+  return exclude.filter((pattern) => !defaults.has(pattern));
+}
+
 export const DEFAULT_WORKFLOW_NATIVE_SNAPSHOT_CONFIG: WorkflowNativeSnapshotConfig = {
   include: ['**/*'],
   exclude: [...DEFAULT_WORKFLOW_NATIVE_SNAPSHOT_EXCLUDES],
@@ -257,12 +262,11 @@ const COMMENTS: Record<ProjectConfigCommentLanguage, Record<ProjectConfigComment
       '# Controls documentation file writes during Shape, Verify, and Archive: allow treats them as neutral instead of returning the change to Build, revert restores the strict behavior.\n# document_writes: allow | revert',
     'native.finish':
       '# Optional repository-owned finish providers. Native keeps commit, push, generic remote verification, and recovery ownership.',
-    'native.snapshot':
-      '# Controls the auditable project scope and bounded work used by Native content snapshots.',
+    'native.snapshot': '# Controls project paths excluded from Native input capture.',
     'native.snapshot.include':
       '# Selects the project-relative paths included in Native snapshots. Patterns use / and support *, **, and ?.',
     'native.snapshot.exclude':
-      '# Removes paths from the included scope. Exclusions are bound into each new change baseline.',
+      '# Project-relative exclusions applied before files are read and bound to the input receipt.',
     'native.snapshot.max_files':
       '# Bounds the number of files captured by one snapshot. Increase it for large monorepos.',
     'native.snapshot.max_total_bytes':
@@ -327,9 +331,9 @@ const COMMENTS: Record<ProjectConfigCommentLanguage, Record<ProjectConfigComment
       '# Shape、Verify 和 Archive 阶段的文档类写入处理方式：allow 视为中性写入、不再把 change 打回 Build，revert 恢复严格行为。\n# 可选值：allow | revert',
     'native.finish':
       '# 可选的仓库自有收尾 provider；提交、推送、通用远端核验和恢复仍由 Native 负责。',
-    'native.snapshot': '# Native 内容快照使用的可审计项目范围与有界工作预算。',
+    'native.snapshot': '# 控制 Native 输入采集需要排除的项目路径。',
     'native.snapshot.include': '# Native 快照纳入的项目相对路径；模式使用 /，支持 *、** 和 ?。',
-    'native.snapshot.exclude': '# 从纳入范围中排除路径；新 change 会把排除策略绑定到 baseline。',
+    'native.snapshot.exclude': '# 读取文件前应用的项目相对路径排除规则，与输入收据绑定。',
     'native.snapshot.max_files': '# 单次快照最多捕获的文件数；大型 monorepo 可按需提高。',
     'native.snapshot.max_total_bytes':
       '# 单次快照最多哈希的文件内容总字节数；内容采用流式读取，不依赖 Git hash。',
@@ -1208,6 +1212,7 @@ export function workflowProjectConfigManagedValue(
   config: WorkflowProjectConfig,
 ): Record<string, unknown> {
   const knowledge = config.knowledge ?? { ...DEFAULT_WORKFLOW_KNOWLEDGE_PROJECT_CONFIG };
+  const exclude = workflowNativeCustomSnapshotExcludes(config.native?.snapshot.exclude ?? []);
   return {
     schema: config.schema,
     default_workflow: config.default_workflow,
@@ -1260,6 +1265,7 @@ export function workflowProjectConfigManagedValue(
             clarification_mode: config.native.clarification_mode,
             archive_confirmation: config.native.archive_confirmation,
             max_verify_failures: config.native.max_verify_failures,
+            ...(exclude.length ? { snapshot: { exclude } } : {}),
             ...(config.native.document_writes
               ? { document_writes: config.native.document_writes }
               : {}),
@@ -1411,9 +1417,10 @@ export function mergeWorkflowProjectConfigDocument(
       if (Object.keys(remainingFinish).length > 0) native.finish = remainingFinish;
       else delete native.finish;
     }
-    // Snapshot settings are retained by the parser as a legacy v1-v3 runtime
-    // default, but Native v4 no longer persists them in user configuration.
-    delete native.snapshot;
+    // 只保留显式排除项；v4 仍不写旧快照的 include 和预算。
+    const exclude = workflowNativeCustomSnapshotExcludes(validated.native.snapshot.exclude);
+    if (exclude.length) native.snapshot = { exclude };
+    else delete native.snapshot;
     if (validated.native.pending_root_move) {
       const existingPending = optionalRecord(existingNative.pending_root_move);
       const pending = workflowPendingRootMoveValue(validated.native.pending_root_move);

@@ -116,6 +116,52 @@ describe('Native workspace group creation', () => {
     }
   });
 
+  it('inherits project input exclusions in Git members without refreshing excluded worktree files', async () => {
+    const backend = path.join(projectRoot, 'backend');
+    const filename = 'application-prod.yml';
+    await fs.writeFile(path.join(backend, filename), 'fixture: one\n');
+    await fs.writeFile(path.join(backend, '.gitattributes'), `${filename} filter=fixture\n`);
+    runGitCommand(backend, ['add', filename, '.gitattributes']);
+    runGitCommand(backend, ['commit', '-m', 'tracked fixture']);
+    const config = defaultProjectConfig();
+    config.native.snapshot.exclude = ['backend/**/application-prod.yml'];
+    await writeProjectConfig(projectRoot, { ...config, repositories });
+    const created = await runNativeCliDetailed([
+      'new',
+      'exclusion',
+      '--isolation',
+      'worktree',
+      '--project-root',
+      projectRoot,
+      '--json',
+    ]);
+    expect(created.output.exitCode, created.output.stdout).toBe(0);
+    const task = created.dispatch.executionCwd!;
+    const member = path.join(task, 'backend');
+    const marker = path.join(temporary, 'clean-filter-called');
+    const script = path.join(temporary, 'clean-filter.cjs');
+    await fs.writeFile(
+      script,
+      `require('node:fs').appendFileSync(${JSON.stringify(marker)}, 'read'); process.stdin.pipe(process.stdout);`,
+    );
+    runGitCommand(backend, [
+      'config',
+      'filter.fixture.clean',
+      `"${process.execPath.replaceAll('\\', '/')}" "${script.replaceAll('\\', '/')}"`,
+    ]);
+    await fs.writeFile(path.join(member, filename), 'fixture: two\n');
+    const before = await nativeRawInputSnapshot({ projectRoot: task });
+    expect(before.complete, before.diagnostics.join('; ')).toBe(true);
+    expect(before.files.map((file) => file.path)).not.toContain(`backend/${filename}`);
+    expect(before.files.map((file) => file.path)).toContain('backend/source.txt');
+    await expect(fs.stat(marker)).rejects.toMatchObject({ code: 'ENOENT' });
+    await fs.writeFile(path.join(member, filename), 'fixture: six\n');
+    const after = await nativeRawInputSnapshot({ projectRoot: task, previous: before });
+    expect(after.complete, after.diagnostics.join('; ')).toBe(true);
+    expect(after.contentHash).toBe(before.contentHash);
+    await expect(fs.stat(marker)).rejects.toMatchObject({ code: 'ENOENT' });
+  });
+
   it('preflights explicit local setup without copying secrets and binds copied ignored inputs', async () => {
     await writeProjectConfig(projectRoot, { ...defaultProjectConfig(), repositories });
     const backend = path.join(projectRoot, 'backend');

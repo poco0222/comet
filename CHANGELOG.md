@@ -10,6 +10,7 @@ All notable changes to @rpamis/comet will be documented in this file.
 
 ### Fixed
 
+- **Native input capture**: Honor project-configured exclusions before reading candidate and check inputs, including tracked files in multi-repository worktrees. Keep exclusion settings across updates and require fresh evidence after the scope changes. Skip CodeGraph's local database and transient files so index updates no longer block verification.
 - **Codex Hook compatibility**: Read `apply_patch` payloads from Codex's `tool_input.command` field so workflow and workspace write guards apply to real tool calls. Check both paths when a patch moves a file, while preserving permitted document edits.
 
 ## What's Changed [0.5.2] - 2026-11-06

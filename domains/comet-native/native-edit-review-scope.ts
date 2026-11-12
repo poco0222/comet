@@ -2,6 +2,7 @@ import path from 'node:path';
 import type { EditReviewScope } from '../workflow-contract/edit-review.js';
 import type { NativeProjectPaths } from './native-types.js';
 import type { NativePortableState } from './native-portable-types.js';
+import { isNativeCodeGraphCachePath } from './native-sensitive-paths.js';
 
 export function nativeEditReviewScope(
   paths: NativeProjectPaths,
@@ -13,7 +14,10 @@ export function nativeEditReviewScope(
       ? `shape:${state.shape_confirmation_hash}:${state.loop.iteration}`
       : null);
   if (!candidateKey) throw new Error('Native 内容判断需要已批准 Shape 或当前候选');
-  return editReviewScope(paths, state, candidateKey);
+  return {
+    ...editReviewScope(paths, state, candidateKey),
+    ignoreNonBehavioralPath: isNativeCodeGraphCachePath,
+  };
 }
 
 function editReviewScope(

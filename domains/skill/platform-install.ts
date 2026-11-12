@@ -31,6 +31,7 @@ import {
   parseWorkflowProjectConfigDocument,
   projectConfigComment,
   renderStructuredProjectConfig,
+  workflowNativeCustomSnapshotExcludes,
 } from '../workflow-contract/project-config.js';
 import { readWorkflowProjectConfigSnapshot } from '../workflow-contract/project-config-reader.js';
 import { writeWorkflowProjectConfigSource } from '../workflow-contract/project-config-writer.js';
@@ -2573,7 +2574,9 @@ async function mergeProjectConfig(
       }
       nativeBlock[f.key] = coerceConfigScalar(value);
     }
-    delete nativeBlock.snapshot;
+    const exclude = workflowNativeCustomSnapshotExcludes(parsed?.native?.snapshot.exclude ?? []);
+    if (exclude.length) nativeBlock.snapshot = { exclude };
+    else delete nativeBlock.snapshot;
     root.native = nativeBlock;
   }
 

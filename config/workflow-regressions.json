@@ -11468,6 +11468,65 @@
           ]
         }
       ]
+    },
+    {
+      "id": "native-sdk-configured-input-exclusions",
+      "sources": ["report:2026-11-12-sam-non-machining-feedback-input-scope"],
+      "behavior": "Apply configured input exclusions before Native SDK capture in coordinator and Git member workspaces.",
+      "coverageLevel": "public-cli",
+      "reproduction": "Comet 0.5.3 lists and fingerprints a synthetic tracked environment file in a child repository despite a matching native.snapshot.exclude. Passing an exclude pathspec to git status still invokes the tracked file's clean filter.",
+      "expected": "Preserve the project's explicit exclusion across update and workspace creation, skip the excluded file before reading it, keep other environment files bound, and permit Archive on the original scope. Require new evidence after a scope change and reject delivery commits containing changes to excluded tracked files.",
+      "forbidden": "Read an excluded tracked file through Git status, accept modified in-scope inputs, reuse evidence across exclusion scopes, or commit changes outside the accepted scope.",
+      "rootCause": "SDK raw input capture did not read the exclusion configuration and used unscoped Git status. Managed configuration writers also removed the legacy snapshot section wholesale.",
+      "tests": [
+        {
+          "file": "test/domains/comet-native/native-sdk-blocked-recovery.test.ts",
+          "namePattern": "^blocked Verifier recovery command contract excludes configured files from SDK receipts and refuses Archive when the exclusion policy changes$",
+          "requiredNames": [
+            "blocked Verifier recovery command contract excludes configured files from SDK receipts and refuses Archive when the exclusion policy changes"
+          ]
+        },
+        {
+          "file": "test/domains/comet-native/native-workspace-group.test.ts",
+          "namePattern": "^Native workspace group creation inherits project input exclusions in Git members without refreshing excluded worktree files$",
+          "requiredNames": [
+            "Native workspace group creation inherits project input exclusions in Git members without refreshing excluded worktree files"
+          ]
+        },
+        {
+          "file": "test/domains/comet-native/native-workspace-group-delivery.test.ts",
+          "namePattern": "^Native workspace group Git delivery blocks changes to excluded tracked inputs before creating any delivery commit$",
+          "requiredNames": [
+            "Native workspace group Git delivery blocks changes to excluded tracked inputs before creating any delivery commit"
+          ]
+        },
+        {
+          "file": "test/app/update.test.ts",
+          "namePattern": "^update command helpers upgrades a beta17 Native project without leaving retired bundles or hiding config$",
+          "requiredNames": [
+            "update command helpers upgrades a beta17 Native project without leaving retired bundles or hiding config"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "native-codegraph-cache-input-drift",
+      "sources": ["report:2026-11-12-sam-mould-code-entry-cache-drift"],
+      "behavior": "Keep CodeGraph database updates out of Native candidate input drift and completed non-behavioral edit reconciliation.",
+      "coverageLevel": "public-cli",
+      "reproduction": "In Comet 0.5.3, a non-Git coordinator captures a child Git repository's ignored CodeGraph database. Updating only the database changes the candidate digest and the Archive command rejects it. The reported task also contains completed reviews whose only paths are CodeGraph cache files.",
+      "expected": "A database, sidecar, or writer PID update leaves the current candidate verifiable. Old completed non-behavioral cache observations remain readable and cannot block later validation.",
+      "forbidden": "Treat a cache refresh as a business edit, discard historic review receipts, or ignore changes to ordinary candidate files.",
+      "rootCause": "Physical input enumeration included the volatile CodeGraph files and generic edit reconciliation continued to compare their latest bytes with historical reviews.",
+      "tests": [
+        {
+          "file": "test/domains/comet-native/native-sdk-blocked-recovery.test.ts",
+          "namePattern": "^blocked Verifier recovery command contract archives an accepted non-Git project after only CodeGraph cache files change$",
+          "requiredNames": [
+            "blocked Verifier recovery command contract archives an accepted non-Git project after only CodeGraph cache files change"
+          ]
+        }
+      ]
     }
   ]
 }

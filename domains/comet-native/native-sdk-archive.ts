@@ -10,8 +10,7 @@ import {
   writeNativeSdkVerificationReport,
 } from './native-sdk-report.js';
 import { nativeVerificationResultHash } from './native-verification-report-v2.js';
-import { canonicalHash } from './native-canonical-hash.js';
-import type { NativeRawInputSnapshot } from './native-portable-checks.js';
+import { nativeRawContentHash, type NativeRawInputSnapshot } from './native-portable-checks.js';
 import path from 'node:path';
 import { inspectNativePortableAcceptanceDrift } from './native-portable-requirements.js';
 import { promises as fs } from 'node:fs';
@@ -466,11 +465,7 @@ async function inspectArchivePreflightOutput(
     inputs = {
       ...observedInputs,
       files,
-      contentHash: canonicalHash('comet.native.raw-content.v1', {
-        projectRoot: observedInputs.projectRoot,
-        files: files.map(({ path, hash, mode }) => ({ path, hash, mode })),
-        ...(observedInputs.outputs?.length ? { outputs: observedInputs.outputs } : {}),
-      }),
+      contentHash: nativeRawContentHash({ ...observedInputs, files }),
     };
   }
   const observation = { materials, inputs };

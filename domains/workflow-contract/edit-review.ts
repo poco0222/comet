@@ -17,6 +17,7 @@ import {
 } from './protected-project-path.js';
 
 export interface EditReviewScope {
+  ignoreNonBehavioralPath?: (ref: string) => boolean;
   projectRoot: string;
   runtimeRoot: string;
   workflow: 'native' | 'classic';
@@ -189,9 +190,15 @@ function validRetainedChecks(
 export interface EditReviewObservation extends EditReviewProposal {
   receipt: ReviewReceipt | null;
 }
-function currentEdits(scope: EditReviewScope, review: EditReviewProposal) {
+function currentEdits(scope: EditReviewScope, review: EditReviewProposal | EditReviewObservation) {
+  const ignore =
+    'receipt' in review && review.applied && review.receipt?.decision === 'non-behavioral'
+      ? scope.ignoreNonBehavioralPath
+      : undefined;
   return review.edits.filter(
-    (edit) => !edit.sourceEvidence || scope.approvedSources?.[edit.path] === edit.sourceEvidence,
+    (edit) =>
+      !ignore?.(edit.path) &&
+      (!edit.sourceEvidence || scope.approvedSources?.[edit.path] === edit.sourceEvidence),
   );
 }
 

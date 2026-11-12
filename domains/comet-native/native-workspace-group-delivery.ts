@@ -23,7 +23,8 @@ import {
   type NativeExecutedCheck,
 } from './native-check-executor.js';
 import { nativeProjectPaths } from './native-paths.js';
-import { nativeRawInputSnapshot } from './native-portable-checks.js';
+import { nativeRawInputSnapshot, readNativeInputExclusions } from './native-portable-checks.js';
+import { isNativeCodeGraphCachePath } from './native-sensitive-paths.js';
 import { copyNativeProtectedFile } from './native-protected-file.js';
 import { normalizeWorkflowRelativePath } from '../workflow-contract/project-config.js';
 import { registerWorkspaceGroupIntegration } from '../workflow-contract/workspace-group.js';
@@ -134,10 +135,12 @@ async function repositoryInput(
   checks: readonly NativeCheckPlan[],
   managedArtifactRoot: string,
   localFiles: readonly { path: string }[],
+  exclusionRoot = ref.split('/').reduce((parent) => path.dirname(parent), root),
 ) {
   const prefix = `${ref}/`;
   const snapshot = await nativeRawInputSnapshot({
     projectRoot: root,
+    exclusionScope: { projectRoot: exclusionRoot, relativeRoot: ref },
     managedArtifactRoot,
     includedPaths: localFiles
       .filter((file) => file.path.startsWith(prefix))
@@ -154,14 +157,36 @@ async function repositoryInput(
   return snapshot;
 }
 
+function changedGitPaths(root: string, args: string[]): string[] {
+  return runGitCommand(root, [...args, '--name-status', '--no-renames', '-z'])
+    .split('\0')
+    .filter((ref, index) => index % 2 === 1 && ref);
+}
+
+function trackedDeliveryChanges(root: string): string[] {
+  return [
+    ...changedGitPaths(root, ['diff', '--cached', 'HEAD']),
+    ...changedGitPaths(root, ['diff-files', '--ignore-submodules=dirty']),
+  ];
+}
+
+function untrackedDeliveryPaths(root: string): string[] {
+  return runGitCommand(root, ['ls-files', '--others', '--exclude-standard', '-t', '-z'])
+    .split('\0')
+    .filter(Boolean)
+    .map((entry) => entry.slice(2));
+}
+
 async function rootInput(
   root: string,
   repositories: readonly { path: string }[],
   checks: readonly NativeCheckPlan[],
   artifactRootRef: string,
+  exclusionRoot = root,
 ) {
   const snapshot = await nativeRawInputSnapshot({
     projectRoot: root,
+    exclusionScope: { projectRoot: exclusionRoot },
     managedArtifactRoot: path.resolve(root, artifactRootRef),
     excludedPaths: repositories.map((entry) => entry.path),
     outputs: checks.flatMap((check) => check.outputs ?? []),
@@ -171,22 +196,30 @@ async function rootInput(
   return snapshot.files;
 }
 
-async function assertRootInput(root: string, journal: NativeWorkspaceGroupDelivery) {
+async function assertRootInput(
+  root: string,
+  journal: NativeWorkspaceGroupDelivery,
+  exclusionRoot = root,
+) {
   const files = await rootInput(
     root,
     journal.repositories,
     journal.checks,
     journal.artifactRootRef,
+    exclusionRoot,
   );
   if (canonicalHash('root-files', files) !== canonicalHash('root-files', journal.rootFiles))
     throw new Error(`Delivery root inputs changed: ${root}`);
 }
 
-async function integrationFingerprint(journal: NativeWorkspaceGroupDelivery): Promise<string> {
+async function integrationFingerprint(
+  journal: NativeWorkspaceGroupDelivery,
+  exclusionRoot: string,
+): Promise<string> {
   const repositories = [];
   if (resolveWorkspaceIdentity(journal.integrationRoot).workspaceId !== journal.integrationRootId)
     throw new Error(`Integration directory was replaced: ${journal.integrationRoot}`);
-  await assertRootInput(journal.integrationRoot, journal);
+  await assertRootInput(journal.integrationRoot, journal, exclusionRoot);
   for (const entry of journal.repositories) {
     const root = path.join(journal.integrationRoot, entry.path);
     if (
@@ -200,6 +233,7 @@ async function integrationFingerprint(journal: NativeWorkspaceGroupDelivery): Pr
       journal.checks,
       path.resolve(journal.integrationRoot, journal.artifactRootRef),
       journal.localFiles,
+      exclusionRoot,
     );
     const outputs = journal.checks
       .flatMap((check) => check.outputs ?? [])
@@ -209,15 +243,19 @@ async function integrationFingerprint(journal: NativeWorkspaceGroupDelivery): Pr
       runGitCommand(root, ['ls-tree', '-r', '--name-only', '-z', 'HEAD']).split('\0'),
     );
     if (
-      runGitCommand(root, [
-        'diff',
-        '--name-only',
-        '-z',
-        'HEAD',
-        '--',
-        '.',
-        ...outputs.map((output) => `:(exclude,literal)${output}`),
-      ]) ||
+      (input.exclusionHash
+        ? trackedDeliveryChanges(root).some(
+            (ref) => !outputs.some((output) => ref === output || ref.startsWith(`${output}/`)),
+          )
+        : runGitCommand(root, [
+            'diff',
+            '--name-only',
+            '-z',
+            'HEAD',
+            '--',
+            '.',
+            ...outputs.map((output) => `:(exclude,literal)${output}`),
+          ])) ||
       input.files.some(
         (file) =>
           !file.generated &&
@@ -427,6 +465,23 @@ export async function prepareNativeWorkspaceGroupDelivery(options: {
         canonicalHash('checks', journal.checks) !== canonicalHash('checks', options.checks))
     )
       throw new Error('Delivery request differs from the original candidate or check plan');
+    const exclusions = await readNativeInputExclusions(group.plan.projectRoot);
+    const excludedFromDelivery = (repository: string, ref: string) =>
+      exclusions.matches(`${repository}/${ref}`) || isNativeCodeGraphCachePath(ref);
+    const assertExcludedPathsUnchanged = (
+      entry: NativeWorkspaceGroup['plan']['repositories'][number],
+    ) => {
+      const changed = changedGitPaths(entry.worktreeRoot, [
+        'diff',
+        '--cached',
+        entry.baseCommit,
+      ]).find((ref) => excludedFromDelivery(entry.path, ref));
+      if (changed)
+        throw new Error(
+          `Changed file is excluded from accepted delivery inputs: ${entry.path}/${changed}`,
+        );
+    };
+    group.plan.repositories.forEach(assertExcludedPathsUnchanged);
     if (!journal) {
       const id = randomUUID();
       const repositories: RepositoryDelivery[] = [];
@@ -606,6 +661,10 @@ export async function prepareNativeWorkspaceGroupDelivery(options: {
         path.resolve(group.plan.projectRoot, journal.artifactRootRef),
         journal.localFiles,
       );
+      if (input.exclusionHash !== exclusions.hash)
+        throw new Error(
+          'Native input exclusions changed during delivery; verify the current candidate',
+        );
       if (input.contentHash !== receipt.sourceHash)
         throw new Error(
           `Accepted task content changed: ${entry.worktreeRoot}; return to Native verification before delivery`,
@@ -628,13 +687,22 @@ export async function prepareNativeWorkspaceGroupDelivery(options: {
         )
           throw new Error(`Unrecorded task commit differs from delivery: ${entry.worktreeRoot}`);
       } else {
-        const changed = gitStatusPaths(entry.worktreeRoot);
+        assertExcludedPathsUnchanged(entry);
+        const changed = exclusions.hash
+          ? [
+              ...new Set([
+                ...trackedDeliveryChanges(entry.worktreeRoot),
+                ...untrackedDeliveryPaths(entry.worktreeRoot),
+              ]),
+            ]
+          : gitStatusPaths(entry.worktreeRoot);
         const tracked = new Set(runGitCommand(entry.worktreeRoot, ['ls-files', '-z']).split('\0'));
         const accepted = new Set(
           input.files.filter((file) => !file.generated).map((file) => file.path),
         );
         const stage: string[] = [];
         for (const ref of changed) {
+          if (excludedFromDelivery(entry.path, ref)) continue;
           if (
             accepted.has(ref) ||
             (tracked.has(ref) && !(await directoryExists(path.join(entry.worktreeRoot, ref))))
@@ -645,7 +713,8 @@ export async function prepareNativeWorkspaceGroupDelivery(options: {
               `Changed tracked file is outside accepted delivery inputs: ${entry.path}/${ref}`,
             );
         }
-        if (stage.length) runGitCommand(entry.worktreeRoot, ['add', '-A', '--', ...stage]);
+        if (stage.length)
+          runGitCommand(entry.worktreeRoot, ['--literal-pathspecs', 'add', '-A', '--', ...stage]);
         receipt.sourceTree = runGitCommand(entry.worktreeRoot, ['write-tree']);
         await save();
         if (receipt.sourceTree !== runGitCommand(entry.worktreeRoot, ['rev-parse', 'HEAD^{tree}']))
@@ -673,7 +742,9 @@ export async function prepareNativeWorkspaceGroupDelivery(options: {
         journal.integrationRoot,
         journal.id,
       );
-      if ((await integrationFingerprint(journal)) !== journal.integrationHash)
+      if (
+        (await integrationFingerprint(journal, group.plan.projectRoot)) !== journal.integrationHash
+      )
         throw new Error('Verified integration inputs changed; prepare a new integration round');
       await assertDeliveryChecks(journal, storage.paths.runtimeDir);
       return journal;
@@ -745,7 +816,11 @@ export async function prepareNativeWorkspaceGroupDelivery(options: {
       if (resolveWorkspaceIdentity(root).workspaceId !== receipt.integrationWorkspaceId)
         throw new Error(`Integration worktree was replaced: ${root}`);
       if (!receipt.integrationCommit) {
-        if (!gitWorktreeIsClean(root))
+        if (
+          exclusions.hash
+            ? trackedDeliveryChanges(root).length > 0 || untrackedDeliveryPaths(root).length > 0
+            : !gitWorktreeIsClean(root)
+        )
           throw new Error(
             `Integration has unresolved changes: ${root}; inspect git status and preserve conflict evidence`,
           );
@@ -780,16 +855,16 @@ export async function prepareNativeWorkspaceGroupDelivery(options: {
         repositories: journal.repositories,
         setup: { ...group.plan.setup, files: journal.localFiles },
         beforeChecks: async () => {
-          beforeSetup = await integrationFingerprint(journal!);
+          beforeSetup = await integrationFingerprint(journal!, group.plan.projectRoot);
         },
       });
-      if (beforeSetup !== (await integrationFingerprint(journal)))
+      if (beforeSetup !== (await integrationFingerprint(journal, group.plan.projectRoot)))
         throw new Error(
           'Workspace setup changed integration inputs; preserve the prepared candidate before retrying',
         );
     }
     await preflightNativeCheckPlans(journal.integrationRoot, journal.checks);
-    const before = await integrationFingerprint(journal);
+    const before = await integrationFingerprint(journal, group.plan.projectRoot);
     for (const plan of journal.checks) {
       const previous = journal.checkAttempts.filter((attempt) => attempt.id === plan.id).at(-1);
       if (previous?.result?.status === 'passed' && previous.inputHash === before) continue;
@@ -832,7 +907,7 @@ export async function prepareNativeWorkspaceGroupDelivery(options: {
         throw new Error(
           `Integration check failed: ${plan.id}; log: ${attempt.result.logRef}; retry the same delivery after correcting the task and verifying its candidate`,
         );
-      if ((await integrationFingerprint(journal)) !== before)
+      if ((await integrationFingerprint(journal, group.plan.projectRoot)) !== before)
         throw new Error(
           'Integration checks changed implementation inputs; no target branches were updated',
         );
@@ -870,7 +945,9 @@ export async function applyNativeWorkspaceGroupDelivery(
       if (index < lockFiles.length)
         return withRecoverableFileLock(lockFiles[index], () => apply(index + 1));
       await assertRootInput(group.plan.projectRoot, journal);
-      if ((await integrationFingerprint(journal)) !== journal.integrationHash)
+      if (
+        (await integrationFingerprint(journal, group.plan.projectRoot)) !== journal.integrationHash
+      )
         throw new Error('Integration inputs changed after verification');
       await assertDeliveryChecks(journal, storage.paths.runtimeDir);
       for (const [position, entry] of group.plan.repositories.entries()) {

@@ -466,6 +466,51 @@ export const nativeSdkCheckRefreshCommandValidator: RuntimeCommandValidator = {
   },
 };
 
+export const NATIVE_SDK_INPUT_EXCLUSION_DRIFT = 'input-exclusion-drift';
+
+/** 只比较原 Verifier 实际消费的收据与当前排除规则，不重新读取旧范围的文件。 */
+export async function inspectNativeSdkInputExclusionDrift(
+  run: Readonly<WorkflowRun>,
+  action: Readonly<RuntimeAction>,
+  projectRoot: string,
+) {
+  const state = parseNativePortableState(run.state);
+  const candidateId = state.builder_handoff?.candidate_id;
+  if (
+    run.workflow.version !== '3' ||
+    run.status !== 'running' ||
+    state.phase !== 'verify' ||
+    state.status !== 'active' ||
+    state.loop.next_action !== 'await-verifier-result' ||
+    state.children_contract_hash ||
+    !candidateId ||
+    action.stepId !== 'verify.verifier' ||
+    action.status !== 'running' ||
+    !action.claim?.sessionId
+  )
+    return null;
+  const checks = run.actionContexts[action.id]?.results['verify.checks']?.value as unknown as
+    NativeSdkCheckOutcome | undefined;
+  if (checks?.candidateId !== candidateId || !checks.rawInput) return null;
+  const root = await resolveWorkspaceRuntimeRoot(projectRoot);
+  const snapshot = await readRawInput(root, run, checks.rawInput.afterRef);
+  if (!snapshot.complete || !samePath(snapshot.projectRoot, projectRoot)) return null;
+  const current = await readNativeInputExclusions(projectRoot);
+  if (snapshot.exclusionHash === current.hash) return null;
+  return {
+    reason: NATIVE_SDK_INPUT_EXCLUSION_DRIFT,
+    summary:
+      state.language === 'zh-CN'
+        ? 'Native 输入排除规则已变化，原验收证据不再适用。'
+        : 'Native input exclusions changed. The original verification evidence no longer applies.',
+    candidateId,
+    actionId: action.id,
+    attempt: action.attempt,
+    previousExclusionHash: snapshot.exclusionHash ?? null,
+    currentExclusionHash: current.hash ?? null,
+  };
+}
+
 /** 当前 Run 的原始变化入口；连续保存只在本次观察时合并一次。 */
 export async function observeNativeSdkInputs(run: Readonly<WorkflowRun>, projectRoot: string) {
   const builderIndex = run.actions

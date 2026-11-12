@@ -47,6 +47,7 @@ import {
 import { readNativeLocalExecution } from './native-local-execution.js';
 import { nativeLocalExecutionFile } from './native-portable-storage.js';
 import { refreshNativeSdkCheckWork } from './native-sdk-next.js';
+import { nativeSdkInputExclusionRecovery } from './native-sdk-continuation.js';
 import { hashRuntimeValue, type RuntimeValue } from '../engine/runtime.js';
 
 export async function runNativeEditReviewCommand(options: EditReviewCommandOptions) {
@@ -188,6 +189,14 @@ async function runNativeEditReviewCommandOnce(options: EditReviewCommandOptions)
     }
     if (options.operation === 'observe') {
       if (!options.sessionId?.trim()) throw new Error('内容判断需要当前 Agent 会话标识');
+      if (sdk && !sdk.application) {
+        const recovery = await nativeSdkInputExclusionRecovery({
+          ...sdk,
+          projectRoot: options.projectRoot,
+        });
+        if (recovery)
+          return { recovery, instruction: `${recovery.reason} ${recovery.preconditions[0]}` };
+      }
       const local = sdk
         ? null
         : await readNativeLocalExecution(nativeLocalExecutionFile(paths, state.name));

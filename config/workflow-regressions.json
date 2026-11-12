@@ -11610,6 +11610,44 @@
           "evidence": ["docs/research/2026-11-12-codex-current-hook-missing-worktree.zh.md"]
         }
       ]
+    },
+    {
+      "id": "native-cli-current-with-missing-worktree",
+      "sources": ["report:2026-11-12-sam-native-missing-worktree-discovery"],
+      "behavior": "Discover, select and show current Native tasks when an unrelated registered worktree directory is missing.",
+      "coverageLevel": "public-cli",
+      "reproduction": "On installed 0.5.3 at 70ed845, leave a registered worktree in the coordinator registry after moving its directory. Run native status from the coordinator, or select or show its unrelated current task. Discovery fails with ENOENT before returning the current task.",
+      "expected": "List current and live tasks, select and show the correct current directory, and diagnose a missing worktree when its own name is requested.",
+      "forbidden": "Block current tasks because another worktree is absent, fall back to another task when selecting the missing task, or delete its registration.",
+      "rootCause": "Native CLI discovery treated every registry path as a readable workspace before resolving task ownership.",
+      "tests": [
+        {
+          "file": "test/domains/comet-native/native-workspace-group.test.ts",
+          "namePattern": "^Native workspace group creation discovers current and live tasks when a registered worktree is missing$",
+          "requiredNames": [
+            "Native workspace group creation discovers current and live tasks when a registered worktree is missing"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "native-verify-resume-after-input-exclusions-change",
+      "sources": ["report:2026-11-12-sam-native-exclusion-change-verify"],
+      "behavior": "Finish a claimed Native v3 Verify after its input exclusions change and verify a successor in the original Run.",
+      "coverageLevel": "public-cli",
+      "reproduction": "On installed 0.5.3 at 70ed845, run the managed checks and claim Verify. Update native.snapshot.exclude, then run edit-review observe. It exits 1 and asks for a successor candidate while native status still only waits for the original Verifier result.",
+      "expected": "Read-only status and observe return a scope recovery request for the original Verifier. Submitting it closes the stale task and lets the Builder submit a successor under the same Run and Shape with fresh evidence and a new Verify.",
+      "forbidden": "Advance on status or observe, accept a stale pass or a result from another session, reuse the stale request after the rules revert, replay the transition on duplicate submission, or reuse the old checks as new evidence.",
+      "rootCause": "The exclusion hash was bound to check evidence, but scope drift had no outcome that could settle an already claimed Verifier without a product verdict.",
+      "tests": [
+        {
+          "file": "test/domains/comet-native/native-sdk-blocked-recovery.test.ts",
+          "namePattern": "^blocked Verifier recovery command contract resumes a claimed Verify in the original Run after input exclusions change$",
+          "requiredNames": [
+            "blocked Verifier recovery command contract resumes a claimed Verify in the original Run after input exclusions change"
+          ]
+        }
+      ]
     }
   ]
 }

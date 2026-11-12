@@ -44,6 +44,57 @@ describe('Native workspace group creation', () => {
     await fs.rm(temporary, { recursive: true, force: true });
   });
 
+  it('discovers current and live tasks when a registered worktree is missing', async () => {
+    await writeProjectConfig(projectRoot, { ...defaultProjectConfig(), repositories });
+    const cli = (args: string[]) => {
+      const result = spawnSync(
+        process.execPath,
+        [
+          path.resolve(process.env.COMET_TEST_PACKAGE_ROOT ?? '.', 'bin/comet.js'),
+          'native',
+          ...args,
+          '--project-root',
+          projectRoot,
+          '--json',
+        ],
+        { cwd: projectRoot, encoding: 'utf8', timeout: 30_000 },
+      );
+      if (result.error) throw result.error;
+      return { exit: result.status, json: JSON.parse(result.stdout) };
+    };
+    const missing = cli(['new', 'missing-task', '--isolation', 'worktree']);
+    expect(missing.exit, missing.json.summary).toBe(0);
+    expect(cli(['new', 'live-task', '--isolation', 'worktree']).exit).toBe(0);
+    expect(cli(['new', 'current-task', '--isolation', 'current']).exit).toBe(0);
+    const oldRoot = missing.json.agent.workspace.cwd;
+    const registration = path.join(
+      resolveWorkspaceRuntimeLocation(projectRoot).runtimeRoot,
+      'workspace-groups/missing-task.json',
+    );
+    const recorded = await fs.readFile(registration, 'utf8');
+    await fs.rename(oldRoot, path.join(temporary, 'removed-task'));
+
+    const list = cli(['status']);
+    expect(list.exit, list.json.summary).toBe(0);
+    expect(list.json.data.items.map(({ name }: { name: string }) => name).sort()).toEqual([
+      'current-task',
+      'live-task',
+    ]);
+    for (const command of ['status', 'select', 'show']) {
+      const current = cli([command, 'current-task']);
+      expect(current.exit, current.json.summary).toBe(0);
+      expect(current.json.agent.workspace.cwd).toBe(projectRoot);
+      const absent = cli([command, 'missing-task']);
+      expect(absent.exit).not.toBe(0);
+      expect(absent.json.error.message).toContain('Registered Native worktree is missing');
+      expect(absent.json.error.message).toContain(oldRoot);
+    }
+    expect(await fs.readFile(registration, 'utf8')).toBe(recorded);
+    expect(
+      JSON.parse(await fs.readFile(path.join(projectRoot, '.comet/current-change.json'), 'utf8')),
+    ).toMatchObject({ workflow: 'native', change: 'current-task' });
+  });
+
   it('suggests unregistered child repositories before creating worktrees through the public CLI', async () => {
     const config = path.join(projectRoot, '.comet/config.yaml');
     await writeProjectConfig(projectRoot, defaultProjectConfig('docs', 'zh-CN'));

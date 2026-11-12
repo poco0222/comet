@@ -1,5 +1,8 @@
 import { readSdkChangeOwner } from '../workflow-contract/change-runtime-owner.js';
-import { readNativeWorkspaceGroupPlan } from './native-workspace-group.js';
+import {
+  nativeWorkspaceGroupRootPresent,
+  readNativeWorkspaceGroupPlan,
+} from './native-workspace-group.js';
 import { readNativeWorkspaceCleanupStatus } from './native-workspace-group-cleanup.js';
 import { resolveNativeSdkCommandRoot } from './native-runtime-ownership.js';
 import { deriveNativeOutputEnvelope, nativeStatusSummaryLine } from './native-output-language.js';
@@ -48,6 +51,7 @@ export async function nativeStatusCommand(
   if (name) {
     const plan = await readNativeWorkspaceGroupPlan(projectRoot, name);
     const root = plan?.projectRoot ?? projectRoot;
+    if (plan) await nativeWorkspaceGroupRootPresent(root, name);
     const retained = await readNativeWorkspaceCleanupStatus(root, name);
     if (retained) {
       if (cursor) throw new NativeUsageError('SDK Native status details do not use --cursor');

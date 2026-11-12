@@ -398,6 +398,22 @@ export async function readNativeWorkspaceGroupPlan(
   return group.plan;
 }
 
+/** Missing task directories do not make the coordinator or its other tasks unavailable. */
+export async function nativeWorkspaceGroupRootPresent(projectRoot: string, requiredName?: string) {
+  try {
+    await fs.lstat(projectRoot);
+    return true;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+    if (requiredName !== undefined)
+      throw new Error(
+        `Registered Native worktree is missing for ${requiredName}: ${projectRoot}. Restore the registered workspace before continuing.`,
+        { cause: error },
+      );
+    return false;
+  }
+}
+
 export async function readNativeWorkspaceGroup(
   projectRoot: string,
 ): Promise<NativeWorkspaceGroup | null> {

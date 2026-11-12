@@ -11565,6 +11565,25 @@
           ]
         }
       ]
+    },
+    {
+      "id": "native-coordinator-current-isolation",
+      "sources": ["report:2026-11-12-sam-quality-export-current-isolation"],
+      "behavior": "Create a Native SDK change in a registered coordinator's current directory while a separate worktree task is active.",
+      "coverageLevel": "public-cli",
+      "reproduction": "In the installed Comet 0.5.3 build at 4a3c39b, register three child Git repositories, create a worktree task, and run native new in-place --isolation current from the coordinator. The command exits 64 and requires worktree isolation.",
+      "expected": "Create the new Run in the coordinator without creating branches or worktrees, preserve existing files, and keep both Runs independently addressable.",
+      "forbidden": "Create two active changes in the coordinator, allow the same name in both locations, apply a stale worktree plan over a current Run, or affect the isolated task.",
+      "rootCause": "Creation and workspace preparation treated repository registration as a requirement to use a group worktree plan even when the caller selected current isolation.",
+      "tests": [
+        {
+          "file": "test/domains/comet-native/native-workspace-group.test.ts",
+          "namePattern": "^Native workspace group creation creates a current change from a registered coordinator alongside an isolated task$",
+          "requiredNames": [
+            "Native workspace group creation creates a current change from a registered coordinator alongside an isolated task"
+          ]
+        }
+      ]
     }
   ]
 }

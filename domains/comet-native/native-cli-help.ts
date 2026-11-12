@@ -99,7 +99,7 @@ const HELP: Readonly<Record<string, NativeHelpEntry>> = Object.freeze({
       '--change-branch <branch>     Change branch; defaults to comet/<change-name>.',
       '--target-branch <branch>     Local base branch; defaults to the current branch.',
       '--worktree-path <path>       Worktree directory; defaults to .worktrees/<change-name>.',
-      '--dry-run                    Inspect a configured repository group without creating worktrees or a Run.',
+      '--dry-run                    With --isolation worktree, preview a repository group without creating worktrees or a Run.',
       '--plan-hash <hash>           Require the exact repository group preflight before creation or recovery.',
       '--setup <json-file>          Bind explicit ignored local files and repeatable preparation checks to the multi-repository plan.',
     ],

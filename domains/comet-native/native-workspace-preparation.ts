@@ -253,7 +253,7 @@ export async function prepareNativeWorkspace(options: {
       },
     };
   }
-  if (options.sourceConfig?.repositories)
+  if (options.sourceConfig?.repositories && options.isolation !== 'current')
     throw new Error('Native multi-repository workspace requires a reviewed workspace group plan');
   if (options.isolation === 'current') {
     if (options.changeBranch || options.targetBranch || options.worktreePath) {

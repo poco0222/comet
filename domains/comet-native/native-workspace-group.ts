@@ -19,6 +19,7 @@ import {
   registerWorkspaceGroup,
   findWorkspaceGroupRoot,
 } from '../workflow-contract/workspace-group.js';
+import { readChangeRuntimeOwner } from '../workflow-contract/change-runtime-owner.js';
 import { readProtectedProjectFile } from '../workflow-contract/protected-project-path.js';
 import {
   validateNativeWorkspaceSetup,
@@ -138,6 +139,11 @@ function planHash(plan: Omit<NativeWorkspaceGroupPlan, 'hash'>): string {
 async function assertSeparateTaskRoot(
   plan: Pick<NativeWorkspaceGroupPlan, 'coordinatorRoot' | 'projectRoot' | 'name'>,
 ): Promise<void> {
+  if (await readChangeRuntimeOwner(plan.coordinatorRoot, 'native', plan.name, { readOnly: true })) {
+    throw new Error(
+      `Native change ${plan.name} already belongs to the coordinator: ${plan.coordinatorRoot}`,
+    );
+  }
   const enclosing = await findWorkspaceGroupRoot(plan.projectRoot);
   if (enclosing && enclosing !== plan.projectRoot)
     throw new Error(`Native task workspace overlaps another task: ${enclosing}`);

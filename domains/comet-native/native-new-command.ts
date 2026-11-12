@@ -252,14 +252,19 @@ export async function nativeNewCommand(
   if (config?.repositories) {
     if (runtimeFormat !== 'sdk') throw new Error('Native workspace groups require --runtime sdk');
     const currentGroup = await readNativeWorkspaceGroup(projectRoot);
-    if (!currentGroup) {
+    if (!currentGroup && isolation === 'branch') {
+      throw new NativeUsageError(
+        'Native repository coordinators support --isolation current or worktree',
+      );
+    }
+    if (!currentGroup && isolation === 'worktree') {
+      if (changeBranch || targetBranch)
+        throw new NativeUsageError(
+          'Native repository groups do not accept --change-branch or --target-branch; configure target_branch for each repository',
+        );
       const setup = setupFile
         ? await planNativeWorkspaceSetup(projectRoot, setupFile, config.repositories)
         : undefined;
-      if (isolation !== 'worktree' || changeBranch || targetBranch)
-        throw new NativeUsageError(
-          'Native repository groups require --isolation worktree; configure target_branch separately for each repository',
-        );
       groupPlan =
         (await readNativeWorkspaceGroupPlan(projectRoot, name)) ??
         (await planNativeWorkspaceGroup({
@@ -293,7 +298,11 @@ export async function nativeNewCommand(
           `Prepared Native workspace group plan ${groupPlan.hash}\n`,
         );
     } else if (dryRun || planHash || setupFile)
-      throw new NativeUsageError('Use the coordinator root to inspect the workspace creation plan');
+      throw new NativeUsageError(
+        currentGroup
+          ? 'Use the coordinator root to inspect the workspace creation plan'
+          : '--dry-run, --plan-hash and --setup require --isolation worktree',
+      );
   } else if (dryRun || planHash || setupFile)
     throw new NativeUsageError(
       '--dry-run, --plan-hash and --setup require configured repositories',

@@ -640,6 +640,112 @@ describe('Native workspace group creation', () => {
     expect(resumed.dispatch.executionCwd).toBe(plan.projectRoot);
   });
 
+  it('creates a current change from a registered coordinator alongside an isolated task', async () => {
+    await writeProjectConfig(projectRoot, { ...defaultProjectConfig(), repositories });
+    const configFile = path.join(projectRoot, '.comet/config.yaml');
+    const config = await fs.readFile(configFile, 'utf8');
+    const source = path.join(projectRoot, 'backend/source.txt');
+    await fs.writeFile(source, 'uncommitted source\n');
+    const packageRoot = process.env.COMET_TEST_PACKAGE_ROOT ?? process.cwd();
+    const invoke = (...args: string[]) => {
+      const result = spawnSync(
+        process.execPath,
+        [
+          path.join(packageRoot, 'bin/comet.js'),
+          'native',
+          ...args,
+          '--project-root',
+          projectRoot,
+          '--json',
+        ],
+        { cwd: projectRoot, encoding: 'utf8', timeout: 30000 },
+      );
+      expect(result.error).toBeUndefined();
+      return { status: result.status, response: JSON.parse(result.stdout) };
+    };
+    const isolated = invoke('new', 'isolated', '--isolation', 'worktree');
+    expect(isolated.status, JSON.stringify(isolated.response)).toBe(0);
+    const isolatedRoot = isolated.response.data.preparation.projectRoot;
+    const isolatedStatus = invoke('status', 'isolated');
+    expect(isolatedStatus.status).toBe(0);
+    const worktreeLists = () =>
+      repositories.map(({ path: ref }) =>
+        runGitCommand(path.join(projectRoot, ref), ['worktree', 'list', '--porcelain']),
+      );
+    const originalWorktrees = worktreeLists();
+    const stalePlan = await planNativeWorkspaceGroup({
+      projectRoot,
+      name: 'in-place',
+      repositories,
+    });
+    const existing = invoke('new', 'isolated', '--isolation', 'current');
+    expect(existing.status).not.toBe(0);
+    expect(existing.response.error.message).toContain('already has a registered worktree');
+    const preview = invoke('new', 'in-place', '--isolation', 'current', '--dry-run');
+    expect(preview.status).not.toBe(0);
+    expect(preview.response.error.message).toContain('require --isolation worktree');
+    await expect(
+      fs.stat(path.join(projectRoot, 'docs/comet/changes/in-place')),
+    ).rejects.toMatchObject({ code: 'ENOENT' });
+
+    const created = invoke('new', 'in-place', '--isolation', 'current');
+    expect(created.status, JSON.stringify(created.response)).toBe(0);
+    expect(created.response.data).toMatchObject({
+      name: 'in-place',
+      phase: 'shape',
+      preparation: {
+        projectRoot,
+        isolation: 'current',
+        createdWorktree: false,
+        createdBranch: false,
+      },
+    });
+    expect(invoke('status', 'in-place').response.agent.workspace.cwd).toBe(projectRoot);
+    expect(invoke('status', 'isolated').response.agent.workspace.cwd).toBe(isolatedRoot);
+    expect(invoke('status', 'isolated').response.data.run).toEqual(
+      isolatedStatus.response.data.run,
+    );
+    expect(invoke('status').response.data.total).toBe(2);
+    const shapeWrite = spawnSync(
+      process.execPath,
+      [
+        path.join(packageRoot, 'assets/skills/comet/scripts/comet-hook-router.mjs'),
+        '--platform',
+        'codex',
+        '--project-root',
+        projectRoot,
+      ],
+      {
+        cwd: path.dirname(source),
+        encoding: 'utf8',
+        timeout: 20000,
+        input: JSON.stringify({
+          cwd: path.dirname(source),
+          tool_name: 'Edit',
+          tool_input: { file_path: source },
+        }),
+      },
+    );
+    expect(shapeWrite.status, shapeWrite.stderr).toBe(2);
+    expect(shapeWrite.stderr).toMatch(/Shape|shape/);
+    const blocked = invoke('new', 'second', '--isolation', 'current');
+    expect(blocked.status).not.toBe(0);
+    expect(blocked.response.error.message).toContain('already contains active change in-place');
+    const duplicate = invoke('new', 'in-place', '--isolation', 'worktree', '--dry-run');
+    expect(duplicate.status).not.toBe(0);
+    expect(duplicate.response.error.message).toContain('already belongs to the coordinator');
+    await expect(createNativeWorkspaceGroup(stalePlan)).rejects.toThrow(
+      'already belongs to the coordinator',
+    );
+    expect(await fs.readFile(configFile, 'utf8')).toBe(config);
+    expect(await fs.readFile(source, 'utf8')).toBe('uncommitted source\n');
+    expect(worktreeLists()).toEqual(originalWorktrees);
+    await expect(fs.stat(stalePlan.projectRoot)).rejects.toMatchObject({ code: 'ENOENT' });
+    await expect(
+      fs.stat(path.join(projectRoot, 'docs/comet/changes/second')),
+    ).rejects.toMatchObject({ code: 'ENOENT' });
+  });
+
   it('binds all repository bytes and Git observations and rejects a missing member', async () => {
     const group = await createNativeWorkspaceGroup(
       await planNativeWorkspaceGroup({ projectRoot, name: 'candidate', repositories }),

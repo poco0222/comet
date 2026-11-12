@@ -373,7 +373,7 @@ export async function advanceNativeSdkTask(options: NativeTaskOptions): Promise<
             },
           }
         : original;
-    const outcomeId =
+    const resultId =
       'native-result-' +
       hashRuntimeValue({
         actionId: action.id,
@@ -382,6 +382,10 @@ export async function advanceNativeSdkTask(options: NativeTaskOptions): Promise<
         claimToken: action.claim.token,
         result,
       });
+    // 同一结果 ID 会回放历史拒绝，重试需要重新校验并保留原收据。
+    const rejectedIds = new Set(action.rejectedOutcomes?.map(({ outcome }) => outcome.outcomeId));
+    let outcomeId = resultId;
+    for (let retry = 1; rejectedIds.has(outcomeId); retry++) outcomeId = `${resultId}:${retry}`;
     repeated = action.outcome?.outcomeId === outcomeId;
     await registerNativeSdkRequestInput({
       projectRoot: options.projectRoot,

@@ -11527,6 +11527,44 @@
           ]
         }
       ]
+    },
+    {
+      "id": "native-task-result-retry-after-formal-review",
+      "sources": ["report:2026-11-12-sam-non-machining-feedback-formal-recovery"],
+      "behavior": "Revalidate the same Native Builder result after the current Agent reviews a formal edit that leaves approved requirements unchanged.",
+      "coverageLevel": "public-cli",
+      "reproduction": "In Comet 0.5.3, submit a Build check request after editing the approved brief, record a non-behavioral review, and resubmit the identical result file. Native next still returns the original document-drift rejection.",
+      "expected": "Validate the unchanged result again on the original Action and claim, retain the rejection history, and run the requested check once.",
+      "forbidden": "Accept unreviewed formal edits, replace the original claim, remove rejected outcomes, or repeat checks when an accepted result is replayed.",
+      "rootCause": "The high-level command always generated the same outcome ID for identical bytes, so the SDK replayed the recorded rejection before checking the current documents.",
+      "tests": [
+        {
+          "file": "test/domains/comet-native/native-shape-incremental.test.ts",
+          "namePattern": "^Native Shape incremental contract revalidates the same public Builder result after reviewing changed formal documents$",
+          "requiredNames": [
+            "Native Shape incremental contract revalidates the same public Builder result after reviewing changed formal documents"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "native-formal-review-restored-approved-bytes",
+      "sources": ["report:2026-11-12-sam-non-machining-feedback-formal-recovery"],
+      "behavior": "Resume Native after an applied non-behavioral formal edit is reviewed and the file is restored to its approved bytes.",
+      "coverageLevel": "public-cli",
+      "reproduction": "In Comet 0.5.3, record a review for an applied brief edit, restore the approved original, and run edit-review prepare-applied. The command returns itself and the same historic receipt on every call.",
+      "expected": "Keep the historic review receipt and the restored file, return no pending review for the reverted edit, and resume the original Builder.",
+      "forbidden": "Replay the reverted edit, change the original Run or claim, or let an unrelated unreviewed requirement change pass.",
+      "rootCause": "The continuation and completion checks treated an already applied and subsequently reverted edit as a pending edit whose approved output still had to be written.",
+      "tests": [
+        {
+          "file": "test/domains/comet-native/native-shape-incremental.test.ts",
+          "namePattern": "^Native Shape incremental contract resumes after restoring approved formal bytes without replaying the reviewed edit$",
+          "requiredNames": [
+            "Native Shape incremental contract resumes after restoring approved formal bytes without replaying the reviewed edit"
+          ]
+        }
+      ]
     }
   ]
 }

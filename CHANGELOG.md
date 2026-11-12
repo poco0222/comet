@@ -10,6 +10,7 @@ All notable changes to @rpamis/comet will be documented in this file.
 
 ### Fixed
 
+- **Native workflow recovery**: Revalidate previously rejected task submissions after their blockers are resolved. Restoring an approved document after a reviewed edit resumes the original task without requiring the edit to be reapplied.
 - **Native input capture**: Honor project-configured exclusions before reading candidate and check inputs, including tracked files in multi-repository worktrees. Keep exclusion settings across updates and require fresh evidence after the scope changes. Skip CodeGraph's local database and transient files so index updates no longer block verification.
 - **Codex Hook compatibility**: Read `apply_patch` payloads from Codex's `tool_input.command` field so workflow and workspace write guards apply to real tool calls. Check both paths when a patch moves a file, while preserving permitted document edits.
 

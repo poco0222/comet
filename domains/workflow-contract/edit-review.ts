@@ -248,6 +248,20 @@ async function reviewContent(
     : currentContent(scope, edit.path, review.applied);
 }
 
+function restoredNativeAppliedEdit(
+  review: EditReviewObservation,
+  edit: ReviewedEdit,
+  current: Awaited<ReturnType<typeof reviewContent>>,
+) {
+  return (
+    review.binding.workflow === 'native' &&
+    review.applied === true &&
+    review.receipt?.decision === 'non-behavioral' &&
+    current?.hash === edit.beforeHash &&
+    current.executable === edit.executable
+  );
+}
+
 async function binding(scope: EditReviewScope): Promise<EditReviewProposal['binding']> {
   if (!scope.candidateKey || !scope.change || !['native', 'classic'].includes(scope.workflow))
     throw new Error('编辑复核缺少候选或工作流绑定');
@@ -892,7 +906,10 @@ export async function editReviewContinuation(
         if (!formal) continue;
         const current = await reviewContent(scope, review, edit);
         const expected = review.applied ? edit.afterHash : edit.beforeHash;
-        if ((current?.hash ?? null) !== expected) {
+        if (
+          (current?.hash ?? null) !== expected &&
+          !restoredNativeAppliedEdit(review, edit, current)
+        ) {
           return {
             mode: 'execute',
             commandArgs: [
@@ -990,6 +1007,7 @@ export async function editReviewContinuation(
     if (review.receipt.decision === 'non-behavioral')
       for (const edit of edits) {
         const current = await reviewContent(scope, review, edit);
+        if (restoredNativeAppliedEdit(review, edit, current)) continue;
         if (current?.hash === edit.beforeHash && edit.beforeHash !== edit.afterHash) {
           const input = await editReviewInputReference(scope, review.proposalHash);
           return {
@@ -1558,6 +1576,7 @@ export async function assertEditReviewsComplete(
       const current = await reviewContent(scope, review, edit);
       if (current && current.executable !== edit.executable)
         throw new Error('编辑复核目标的执行权限不匹配');
+      if (restoredNativeAppliedEdit(review, edit, current)) continue;
       if (review.receipt.decision === 'discard') {
         if (review.receipt.authority.kind === 'runtime-superseded') continue;
         if (!reaches(completionEdges(edit.path), edit.beforeHash, current?.hash ?? null))

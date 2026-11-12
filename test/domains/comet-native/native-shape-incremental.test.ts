@@ -212,7 +212,152 @@ async function legacyFixture() {
   return { ...f, name, change, briefFile, released, inspect, runtime };
 }
 
+function runPublicComet(f: Awaited<ReturnType<typeof fixture>>, ...args: string[]) {
+  const packageRoot = process.env.COMET_TEST_PACKAGE_ROOT ?? process.cwd();
+  const result = spawnSync(
+    process.execPath,
+    [path.join(packageRoot, 'bin/comet.js'), ...args, '--project-root', f.root, '--json'],
+    { cwd: f.root, encoding: 'utf8', timeout: 60_000 },
+  );
+  expect(result.stdout, result.stderr || String(result.error)).toBeTruthy();
+  return { exitCode: result.status, response: JSON.parse(result.stdout) };
+}
+
+async function approveAppliedBriefEdit(f: Awaited<ReturnType<typeof fixture>>) {
+  const prepared = runPublicComet(
+    f,
+    'edit-review',
+    'prepare-applied',
+    'native',
+    f.name,
+    '--session',
+    'builder',
+  );
+  expect(prepared.exitCode, JSON.stringify(prepared.response)).toBe(0);
+  const file = path.join(f.base, 'formal-edit-judgment.json');
+  await fs.writeFile(
+    file,
+    JSON.stringify({
+      ...prepared.response.data.recordTemplate,
+      decision: 'non-behavioral',
+      summary: 'The explanation leaves the worker and acceptance criteria unchanged.',
+    }),
+  );
+  const recorded = runPublicComet(f, 'edit-review', 'record', 'native', f.name, '--file', file);
+  expect(recorded.exitCode, JSON.stringify(recorded.response)).toBe(0);
+  return recorded.response.data.receipt;
+}
+
 describe('Native Shape incremental contract', () => {
+  it('revalidates the same public Builder result after reviewing changed formal documents', async () => {
+    const f = await fixture();
+    const builder = await f.claim('build.builder');
+    const edited = brief + '\n<!-- Explanation for the worker check. -->\n';
+    await fs.writeFile(f.briefFile, edited);
+    const file = path.join(f.base, 'build-check-request.json');
+    await fs.writeFile(
+      file,
+      JSON.stringify({
+        status: 'succeeded',
+        output: {
+          response: {
+            kind: 'request-checks',
+            checks: [
+              {
+                id: 'worker',
+                name: 'Worker',
+                executable: process.execPath,
+                argv: ['-e', 'process.exit(0)'],
+                cwdRef: '.',
+                timeoutMs: 10_000,
+                repeatable: true,
+              },
+            ],
+          },
+        },
+      }),
+    );
+    const submit = () =>
+      runPublicComet(
+        f,
+        'native',
+        'next',
+        f.name,
+        '--action',
+        builder.id,
+        '--session',
+        'builder',
+        '--result',
+        file,
+      );
+    const blocked = submit();
+    expect(blocked.exitCode).not.toBe(0);
+    expect(blocked.response.error.message).toContain('OUTCOME_REJECTED');
+    const { run: rejected } = await f.inspect();
+    expect(rejected.actions.some(({ stepId }) => stepId === 'build.checks')).toBe(false);
+    const rejectedBuilder = rejected.actions.find(({ id }) => id === builder.id)!;
+    expect(rejectedBuilder.rejectedOutcomes).toHaveLength(1);
+
+    await approveAppliedBriefEdit(f);
+    const resumed = submit();
+    expect(resumed.exitCode, JSON.stringify(resumed.response)).toBe(0);
+    const { run: settled } = await f.inspect();
+    const accepted = settled.actions.find(({ id }) => id === builder.id)!;
+    expect(accepted).toMatchObject({
+      status: 'succeeded',
+      attempt: builder.attempt,
+      inputHash: builder.inputHash,
+      claim: builder.claim,
+      rejectedOutcomes: rejectedBuilder.rejectedOutcomes,
+    });
+    expect(accepted.outcome!.outcomeId).not.toBe(
+      rejectedBuilder.rejectedOutcomes![0].outcome.outcomeId,
+    );
+    expect(settled.actions.filter(({ stepId }) => stepId === 'build.checks')).toMatchObject([
+      { status: 'succeeded' },
+    ]);
+    expect(await fs.readFile(f.briefFile, 'utf8')).toBe(edited);
+    const replay = submit();
+    expect(replay.exitCode, JSON.stringify(replay.response)).toBe(0);
+    expect((await f.inspect()).run).toEqual(settled);
+  });
+
+  it('resumes after restoring approved formal bytes without replaying the reviewed edit', async () => {
+    const f = await fixture();
+    const builder = await f.claim('build.builder');
+    const { run: before, state } = await f.inspect();
+    await fs.writeFile(f.briefFile, brief + '\n<!-- Explanation for the worker check. -->\n');
+    const receipt = await approveAppliedBriefEdit(f);
+    await fs.writeFile(f.briefFile, brief);
+
+    const prepare = () =>
+      runPublicComet(f, 'edit-review', 'prepare-applied', 'native', f.name, '--session', 'builder');
+    const restored = prepare();
+    expect(restored.exitCode, JSON.stringify(restored.response)).toBe(0);
+    expect(restored.response.data).toMatchObject({ reviews: [{ receipt }], continuation: null });
+    expect(prepare()).toEqual(restored);
+    const { assertNativeEditReviewsComplete } =
+      await import('../../../domains/comet-native/native-edit-review.js');
+    await expect(assertNativeEditReviewsComplete(f.paths, state)).resolves.toBeUndefined();
+    const resumed = runPublicComet(f, 'native', 'next', f.name, '--session', 'builder');
+    expect(resumed.exitCode, JSON.stringify(resumed.response)).toBe(0);
+    expect(resumed.response.data.task.actionId).toBe(builder.id);
+    expect(await fs.readFile(f.briefFile, 'utf8')).toBe(brief);
+    expect((await f.inspect()).run).toEqual(before);
+
+    await fs.writeFile(
+      f.briefFile,
+      brief.replace('The worker returns one.', 'The worker returns two.'),
+    );
+    const unreviewed = prepare();
+    expect(unreviewed.exitCode).toBe(0);
+    expect(unreviewed.response.data.proposal.proposalHash).not.toBe(receipt.proposalHash);
+    expect(unreviewed.response.data.recordTemplate.proposalHash).toBe(
+      unreviewed.response.data.proposal.proposalHash,
+    );
+    await expect(assertNativeEditReviewsComplete(f.paths, state)).rejects.toThrow(/复核/u);
+  });
+
   it('keeps approved acceptance after the current Builder judges equivalent wording and completes its original handoff', async () => {
     const f = await fixture();
     const builder = await f.claim('build.builder');

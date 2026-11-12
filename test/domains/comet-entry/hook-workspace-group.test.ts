@@ -488,4 +488,65 @@ describe('Comet Hook workspace groups', () => {
     expect(foreign.status, foreign.stdout + foreign.stderr).toBe(2);
     expect(foreign.stderr + foreign.stdout).toContain('session is bound to task-a');
   });
+
+  it('keeps the current workspace guarded after unrelated worktree directories disappear', async () => {
+    const created = await runNativeCliDetailed([
+      'new',
+      'current-export',
+      '--isolation',
+      'current',
+      '--project-root',
+      coordinator,
+      '--json',
+    ]);
+    expect(created.output.exitCode, created.output.stdout).toBe(0);
+    const worktreeParent = path.dirname(taskA);
+    const moved = path.join(temporary, 'removed-worktrees');
+    const oldRuntime = resolveWorkspaceRuntimeLocation(taskA).runtimeRoot;
+    const packageRoot = process.env.COMET_TEST_PACKAGE_ROOT ?? process.cwd();
+    const hook = (target: string) =>
+      spawnSync(
+        process.execPath,
+        [
+          path.join(packageRoot, 'assets/skills/comet/scripts/comet-hook-router.mjs'),
+          '--platform',
+          'codex',
+          '--project-root',
+          coordinator,
+        ],
+        {
+          cwd: coordinator,
+          encoding: 'utf8',
+          timeout: 20_000,
+          input: JSON.stringify({
+            cwd: coordinator,
+            session_id: 'current-export-session',
+            tool_name: 'apply_patch',
+            tool_input: {
+              command: `*** Begin Patch\n*** Add File: ${target}\n+fixture\n*** End Patch`,
+            },
+          }),
+        },
+      );
+
+    await fs.rename(worktreeParent, moved);
+    try {
+      const spec = path.join(coordinator, 'docs/comet/changes/current-export/specs/export/spec.md');
+      const allowed = hook(spec);
+      expect(allowed.status, allowed.stderr).toBe(0);
+      const source = hook(path.join(coordinator, 'backend/export.ts'));
+      expect(source.status, source.stderr).toBe(2);
+      expect(source.stderr).toMatch(/Shape|shape/u);
+      for (const target of [
+        path.join(taskA, 'backend/export.ts'),
+        path.join(oldRuntime, 'workspace-group.json'),
+      ]) {
+        const retired = hook(target);
+        expect(retired.status, retired.stderr).toBe(2);
+        expect(retired.stderr).toContain('failed closed');
+      }
+    } finally {
+      await fs.rename(moved, worktreeParent);
+    }
+  });
 });

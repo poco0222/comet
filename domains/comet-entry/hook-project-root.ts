@@ -1,4 +1,7 @@
-import { resolveWorkspaceRuntimeRootSync } from '../workflow-contract/workspace-runtime.js';
+import {
+  resolveWorkspaceRuntimeLocationFromIdentity,
+  resolveWorkspaceRuntimeRootSync,
+} from '../../platform/paths/workspace-runtime.js';
 import {
   cometHookRuntimeTargetCandidates,
   isCometHookTargetWithin,
@@ -80,14 +83,18 @@ export async function resolveCometHookProjectRoot(
   if (groups.length) {
     const taskRoots = groups.map((group) => group.projectRoot);
     const integrations = await listWorkspaceGroupIntegrations(coordinatorRoot);
-    const allRoots = [
-      ...taskRoots,
-      coordinatorRoot,
-      ...integrations.map((item) => item.projectRoot),
-    ];
+    const runtimeRoots = new Map(
+      [...groups, ...integrations].map((registration) => [
+        registration.projectRoot,
+        resolveWorkspaceRuntimeLocationFromIdentity(registration).runtimeRoot,
+      ]),
+    );
+    runtimeRoots.set(coordinatorRoot, resolveWorkspaceRuntimeRootSync(coordinatorRoot));
     const ownerOf = (root: string) =>
       integrations.find((item) => item.projectRoot === root)?.taskRoot ?? root;
-    const cwdRoot = request.cwd ? owningWorktree(path.resolve(request.cwd), allRoots) : null;
+    const cwdRoot = request.cwd
+      ? owningWorktree(path.resolve(request.cwd), [...runtimeRoots.keys()])
+      : null;
     const owners = new Set<string>();
     const session = request.sessionId
       ? await readWorkspaceGroupSession(coordinatorRoot, request.sessionId)
@@ -99,30 +106,26 @@ export async function resolveCometHookProjectRoot(
       const absolute = path.isAbsolute(target)
         ? target
         : `${request.cwd ?? explicitRoot}${path.sep}${target}`;
-      for (const root of allRoots) {
+      const runtimeCandidates = cometHookRuntimeTargetCandidates(explicitRoot, target, request.cwd);
+      for (const [root, runtimeRoot] of runtimeRoots) {
         const integration = integrations.find((item) => item.projectRoot === root);
         if (await isCometHookTargetWithin(root, absolute)) {
           if (integration && !(await readWorkspaceGroupIntegration(root)))
             throw new Error('Workspace group integration registration is incomplete');
           owners.add(ownerOf(root));
         }
-        for (const candidate of cometHookRuntimeTargetCandidates(
-          explicitRoot,
-          target,
-          request.cwd,
-        )) {
+        for (const candidate of runtimeCandidates) {
           // Retained integration roots keep their identity and routing after member cleanup.
           if (
             integration &&
             request.intent === 'write' &&
-            ((await isCometHookTargetWithin(resolveWorkspaceRuntimeRootSync(root), candidate)) ||
+            ((await isCometHookTargetWithin(runtimeRoot, candidate)) ||
               (await isCometHookTargetWithin(path.join(root, '.comet/runtime'), candidate)))
           )
             throw new Error(
               'Comet Runtime-owned integration files must be maintained by Runtime commands',
             );
-          if (await isCometHookTargetWithin(resolveWorkspaceRuntimeRootSync(root), candidate))
-            owners.add(ownerOf(root));
+          if (await isCometHookTargetWithin(runtimeRoot, candidate)) owners.add(ownerOf(root));
         }
       }
     }

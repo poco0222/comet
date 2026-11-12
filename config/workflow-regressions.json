@@ -11584,6 +11584,32 @@
           ]
         }
       ]
+    },
+    {
+      "id": "codex-hook-current-with-missing-worktree",
+      "sources": ["report:2026-11-12-sam-current-hook-missing-worktree"],
+      "behavior": "Apply the current change's Hook policy when an unrelated registered worktree directory is missing.",
+      "coverageLevel": "runtime",
+      "reproduction": "In Comet 0.5.3 at ee407b4, create a current change and isolated worktree tasks under one coordinator. Remove the worktrees' parent directory while retaining their Runtime registrations. The configured Codex Router rejects an otherwise allowed write in the current project with ENOENT during project discovery.",
+      "expected": "An allowed write in the current project reaches its Guard and can proceed. Its Shape restrictions and the missing worktree's directory and retained Runtime ownership still apply.",
+      "forbidden": "Block current writes only because another worktree is absent, or let writes targeting that worktree or its retained Runtime fall back to the current change.",
+      "rootCause": "The Hook Router recomputed the live directory identity of every registered workspace to find its Runtime path, even when the request targeted a different workspace.",
+      "tests": [
+        {
+          "file": "test/domains/comet-entry/hook-workspace-group.test.ts",
+          "namePattern": "^Comet Hook workspace groups keeps the current workspace guarded after unrelated worktree directories disappear$",
+          "requiredNames": [
+            "Comet Hook workspace groups keeps the current workspace guarded after unrelated worktree directories disappear"
+          ]
+        }
+      ],
+      "additionalAcceptance": [
+        {
+          "layer": "real Codex PreToolUse routing and apply_patch side effects on macOS",
+          "status": "verified",
+          "evidence": ["docs/research/2026-11-12-codex-current-hook-missing-worktree.zh.md"]
+        }
+      ]
     }
   ]
 }

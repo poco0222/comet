@@ -11449,6 +11449,25 @@
           "evidence": ["docs/research/2026-11-11-codex-hook-compatibility.zh.md"]
         }
       ]
+    },
+    {
+      "id": "native-worktree-unregistered-child-repositories",
+      "sources": ["report:2026-11-12-native-worktree-missing-repository-registration"],
+      "behavior": "Identify unregistered child Git repositories when first requesting a Native worktree from a non-Git coordinator.",
+      "coverageLevel": "public-cli",
+      "reproduction": "With Comet 0.5.3 and three independent child Git repositories but no repositories entry in the coordinator config, native new --isolation worktree reports a missing attached Git branch. Adding --dry-run reports missing configuration without identifying any repositories.",
+      "expected": "Both creation and preview list the direct independent child repositories and show how to register them. After explicit registration, preview and creation can proceed.",
+      "forbidden": "Change the project configuration, create a task or worktree, or include symlink aliases, linked checkouts, or nested repositories in the suggestions.",
+      "rootCause": "Native new selected multi-repository planning only when the configuration already contained repositories and did not check for unregistered child repositories before falling back to single-repository handling.",
+      "tests": [
+        {
+          "file": "test/domains/comet-native/native-workspace-group.test.ts",
+          "namePattern": "^Native workspace group creation suggests unregistered child repositories before creating worktrees through the public CLI$",
+          "requiredNames": [
+            "Native workspace group creation suggests unregistered child repositories before creating worktrees through the public CLI"
+          ]
+        }
+      ]
     }
   ]
 }

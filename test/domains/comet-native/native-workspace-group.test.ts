@@ -44,6 +44,78 @@ describe('Native workspace group creation', () => {
     await fs.rm(temporary, { recursive: true, force: true });
   });
 
+  it('suggests unregistered child repositories before creating worktrees through the public CLI', async () => {
+    const config = path.join(projectRoot, '.comet/config.yaml');
+    await writeProjectConfig(projectRoot, defaultProjectConfig('docs', 'zh-CN'));
+    const original = await fs.readFile(config, 'utf8');
+    const nested = path.join(projectRoot, 'ordinary/nested');
+    await fs.mkdir(nested, { recursive: true });
+    runGitCommand(nested, ['init', '-b', 'main']);
+    await fs.mkdir(path.join(projectRoot, 'invalid/.git'), { recursive: true });
+    await fs.symlink(
+      path.join(projectRoot, 'backend'),
+      path.join(projectRoot, 'alias'),
+      'junction',
+    );
+    const backend = path.join(projectRoot, 'backend');
+    runGitCommand(backend, [
+      'worktree',
+      'add',
+      '--detach',
+      path.join(projectRoot, 'linked-checkout'),
+    ]);
+    const originalWorktrees = repositories.map(({ path: ref }) =>
+      runGitCommand(path.join(projectRoot, ref), ['worktree', 'list', '--porcelain']),
+    );
+    const invoke = (...flags: string[]) =>
+      spawnSync(
+        process.execPath,
+        [
+          path.resolve('assets/skills/comet-native/scripts/comet-native-new.mjs'),
+          'first-worktree',
+          '--isolation',
+          'worktree',
+          '--json',
+          ...flags,
+        ],
+        { cwd: projectRoot, encoding: 'utf8', timeout: 30000 },
+      );
+    const suggestion =
+      'repositories:\n  - path: "backend"\n  - path: "frontend"\n  - path: "mobile"';
+    for (const flags of [[], ['--dry-run']]) {
+      const blocked = invoke(...flags);
+      expect(blocked.error).toBeUndefined();
+      expect(blocked.status).not.toBe(0);
+      const { error } = JSON.parse(blocked.stdout);
+      expect(error.message).toContain('尚未登记');
+      expect(error.message).toContain('.comet/config.yaml');
+      expect(error.message.split('\n\n').at(-1)).toBe(suggestion);
+    }
+    expect(await fs.readFile(config, 'utf8')).toBe(original);
+    expect(await fs.readdir(path.dirname(config))).toEqual(['config.yaml']);
+    const task = path.join(temporary, 'project-worktrees', 'first-worktree');
+    await expect(fs.stat(task)).rejects.toMatchObject({ code: 'ENOENT' });
+    for (const [index, { path: ref }] of repositories.entries()) {
+      const repo = path.join(projectRoot, ref);
+      expect(runGitCommand(repo, ['worktree', 'list', '--porcelain'])).toBe(
+        originalWorktrees[index],
+      );
+      expect(runGitCommand(repo, ['branch', '--list', 'comet/first-worktree'])).toBe('');
+    }
+
+    await fs.appendFile(config, `\n${suggestion}\n`);
+    const preview = invoke('--dry-run');
+    expect(preview.status, preview.stdout + preview.stderr).toBe(0);
+    const { plan } = JSON.parse(preview.stdout).data;
+    const created = invoke('--plan-hash', plan.hash);
+    expect(created.status, created.stdout + created.stderr).toBe(0);
+    for (const { path: ref } of repositories) {
+      expect(runGitCommand(path.join(task, ref), ['branch', '--show-current'])).toBe(
+        'comet/first-worktree',
+      );
+    }
+  });
+
   it('preflights explicit local setup without copying secrets and binds copied ignored inputs', async () => {
     await writeProjectConfig(projectRoot, { ...defaultProjectConfig(), repositories });
     const backend = path.join(projectRoot, 'backend');

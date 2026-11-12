@@ -1,6 +1,8 @@
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
 
+import { inspectGitWorktree, samePath } from '../../platform/paths/git-worktree.js';
+import { normalizeWorkflowRelativePath } from '../workflow-contract/project-config.js';
 import { defaultProjectConfig, readProjectConfig } from './native-config.js';
 import { atomicWriteText } from './native-atomic-file.js';
 import {
@@ -24,6 +26,7 @@ import {
   ensureNativeDirectories,
   nativeChangeArtifactPaths,
   nativeProjectPaths,
+  PROJECT_CONFIG_FILE,
 } from './native-paths.js';
 import { nativePortableContinuation } from './native-portable-continuation.js';
 import { createNativePortableChange, nativePortableChangeDir } from './native-portable-runtime.js';
@@ -33,6 +36,7 @@ import {
   planNativeWorkspaceGroup,
   readNativeWorkspaceGroup,
   readNativeWorkspaceGroupPlan,
+  readNativeWorkspaceGroupRecord,
 } from './native-workspace-group.js';
 import { recordNativeWorkspaceConfig } from './native-workspace-config.js';
 import { planNativeWorkspaceSetup } from './native-workspace-setup.js';
@@ -47,6 +51,7 @@ import { inspectNativeSdkRun } from './native-runtime-ownership.js';
 import { createNativeSdkChange } from './native-sdk-create.js';
 import { parseNativePortableState } from './native-portable-state.js';
 import { projectNativeSdkStatus } from './native-sdk-status.js';
+import type { CometProjectConfig } from './native-types.js';
 import {
   assertNoArguments,
   languageOption,
@@ -167,6 +172,49 @@ async function discoverNativeCapability(
   }
 }
 
+async function suggestNativeRepositoryRegistration(
+  projectRoot: string,
+  config: CometProjectConfig | null,
+  language: 'en' | 'zh-CN',
+): Promise<void> {
+  if (
+    inspectGitWorktree(projectRoot).isGitWorktree ||
+    (await readNativeWorkspaceGroupRecord(projectRoot))
+  )
+    return;
+  const artifactDirectory = (config?.native.artifact_root ?? 'docs').split('/')[0];
+  const repositories: string[] = [];
+  for (const entry of await fs.readdir(projectRoot, { withFileTypes: true })) {
+    if (!entry.isDirectory() || entry.name.startsWith('.') || entry.name === artifactDirectory)
+      continue;
+    try {
+      if (normalizeWorkflowRelativePath(entry.name, 'repositories.path') !== entry.name) continue;
+    } catch {
+      continue;
+    }
+    const root = path.join(projectRoot, entry.name);
+    const git = await fs.lstat(path.join(root, '.git')).catch((error: NodeJS.ErrnoException) => {
+      if (error.code === 'ENOENT') return null;
+      throw error;
+    });
+    if (!git?.isDirectory() && !git?.isFile()) continue;
+    const checkout = inspectGitWorktree(root);
+    if (
+      checkout.currentWorktreeRoot &&
+      samePath(root, checkout.currentWorktreeRoot) &&
+      !checkout.isSecondaryWorktree
+    )
+      repositories.push(entry.name);
+  }
+  if (!repositories.length) return;
+  const message =
+    language === 'zh-CN'
+      ? `在项目根目录下发现 Git 仓库，当前项目尚未登记子仓。${config ? '' : '请先在项目根目录运行 comet native init。'}确认参与范围后，把选中的条目加入 ${PROJECT_CONFIG_FILE} 顶层，再重试原命令。`
+      : `Found Git repositories directly under the project root, but none are registered.${config ? '' : ' Run comet native init from the project root first.'} Confirm which repositories to include, add the selected entries to the top level of ${PROJECT_CONFIG_FILE}, then retry.`;
+  const entries = repositories.sort().map((ref) => `  - path: ${JSON.stringify(ref)}`);
+  throw new NativeUsageError([message, '', 'repositories:', ...entries].join('\n'));
+}
+
 export async function nativeNewCommand(
   args: string[],
   projectRoot: string,
@@ -196,6 +244,9 @@ export async function nativeNewCommand(
   const sourceConfig = config;
   if (config?.native.pending_root_move) {
     throw new Error(`Native root move ${config.native.pending_root_move.id} is incomplete`);
+  }
+  if (runtimeFormat === 'sdk' && isolation === 'worktree' && !config?.repositories) {
+    await suggestNativeRepositoryRegistration(projectRoot, config, language);
   }
   let groupPlan;
   if (config?.repositories) {

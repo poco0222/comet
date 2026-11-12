@@ -6,7 +6,7 @@ All notable changes to @rpamis/comet will be documented in this file.
 
 ### Added
 
-- **Native multi-repository workspaces**: Declare independent child repositories under a non-Git coordinator and run parallel SDK tasks in separate groups of worktrees. Preview creation, preserve original working files, prepare explicitly selected local configuration and repeatable environment commands, and keep session writes within their selected task. After acceptance and Archive, check the combined integration, merge each local target with resumable receipts, and publish shared Specs without overwriting concurrent changes. Explicit cleanup retains dirty or ignored files, formal artifacts, branches and readable Run history. Classic and Supervisor multi-repository execution are not supported.
+- **Native multi-repository workspaces**: Run parallel SDK tasks in separate groups of worktrees under a non-Git coordinator. If no repositories are registered, the first worktree request lists discovered child repositories and shows how to register them before creating any worktrees. Preview creation, preserve original working files, prepare explicitly selected local configuration and repeatable environment commands, and keep session writes within their selected task. After acceptance and Archive, check the combined integration, merge each local target with resumable receipts, and publish shared Specs without overwriting concurrent changes. Explicit cleanup retains dirty or ignored files, formal artifacts, branches and readable Run history. Classic and Supervisor multi-repository execution are not supported.
 
 ### Fixed
 

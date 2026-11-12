@@ -29,7 +29,7 @@
 > [Bilibili video](https://www.bilibili.com/video/BV1y4Gi6CEo1/?spm_id_from=333.1387.homepage.video_card.click&vd_source=d22726fe6b108647dbebf1c5d8817377)
 > [DouYin](https://www.douyin.com/search/comet?aid=cd8fcc82-498b-4d59-8860-617deb719412&modal_id=7646429015808936293&type=general)
 
-This project is supported by sponsors including [PackyCode](https://www.packyapi.ai/register?aff=DIId)、[RunAPI](https://runapi.host)、[Cubence](https://cubence.com?source=comet).
+This project is supported by sponsors including [PackyCode](https://www.packyapi.ai/register?aff=DIId)、[Cubence](https://cubence.com?source=comet).
 
 > [Want to be featured here?](mailto:benyuanming@gmail.com)
 
@@ -47,17 +47,6 @@ This project is supported by sponsors including [PackyCode](https://www.packyapi
       <p>Access leading AI models through PackyCode with one API endpoint and one API key. Enjoy fast, reliable access with automatic failover and dedicated high-speed routes for Codex and Claude Code.</p>
       <p>Get started with $1 in free credits, a discount on your first top-up, and savings of up to 80% on eligible routes. Pay in RMB with no currency conversion markups or extra top-up fees.</p>
       <p><a href="https://www.packyapi.ai/register?aff=DIId">Sign up through the link and start building today.</a></p>
-    </td>
-  </tr>
-  <tr>
-    <td width="25%" align="center" valign="middle">
-      <a href="https://runapi.host/register?aff=u7wr">
-        <img src="https://github.com/rpamis/comet/blob/master/img/RunApi.jpg" alt="RunAPI Sponsor" width="180">
-      </a>
-    </td>
-    <td width="75%" align="left" valign="middle">
-      <p>RunAPI is a fast, reliable AI model API gateway. Access over 150 leading models, including OpenAI, Claude, Gemini, DeepSeek, and Grok, with a single API key and discounts of up to 90%. It works seamlessly with tools such as Claude Code and OpenClaw.</p>
-      <p><a href="https://runapi.host/register?aff=u7wr">Registry in here</a></p>
     </td>
   </tr>
   <tr>

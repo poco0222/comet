@@ -29,7 +29,7 @@
 > [Bilibili video](https://www.bilibili.com/video/BV1y4Gi6CEo1/?spm_id_from=333.1387.homepage.video_card.click&vd_source=d22726fe6b108647dbebf1c5d8817377)
 > [抖音](https://www.douyin.com/search/comet?aid=cd8fcc82-498b-4d59-8860-617deb719412&modal_id=7646429015808936293&type=general)
 
-本项目由 [PackyCode](https://www.packyapi.ai/register?aff=DIId)、[RunApi](https://runapi.host)、[Cubence](https://cubence.com?source=comet)等赞助方支持
+本项目由 [PackyCode](https://www.packyapi.ai/register?aff=DIId)、[Cubence](https://cubence.com?source=comet)等赞助方支持
 
 > [想出现在这里？](mailto:benyuanming@gmail.com)
 
@@ -45,16 +45,6 @@
     </td>
     <td width="75%" align="left" valign="middle">
       PackyCode 是一家稳定、高效的 API 中转服务商，一句话接入主流大模型。统一域名、统一密钥、智能容灾切换，97% 可用性。人民币1:1充值，无汇率无手续费坑，新用户首充立享折扣 + $1免费体验额度，多分组折扣低至 2 折起，提供专属Codex/Claude Code高速通道。<a href="https://www.packyapi.ai/register?aff=DIId">点此链接注册，立即开始使用！</a>
-    </td>
-  </tr>
-  <tr>
-    <td width="25%" align="center" valign="middle">
-      <a href="https://runapi.host/register?aff=u7wr">
-        <img src="https://github.com/rpamis/comet/blob/master/img/RunApi.jpg" alt="RunApi Sponsor" width="180">
-      </a>
-    </td>
-    <td width="75%" align="left" valign="middle">
-      RunAPI 是高效稳定的 AI 模型 API 中转平台，一个 API Key 即可访问 OpenAI、Claude、Gemini、DeepSeek、Grok 等 150+ 主流模型，低至 1 折，极其稳定，可以无缝兼容 Claude Code、OpenClaw 等工具。<a href="https://runapi.host/register?aff=u7wr">点此链接注册！</a>
     </td>
   </tr>
   <tr>

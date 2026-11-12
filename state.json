@@ -5,8 +5,11 @@
   "controller_sha": "e1e5a73b98e68b67c3da45257567e4e334c0aa2b",
   "candidate": "af0c025af3fbf3dfea89eb6a9f57b42316c2987b",
   "candidate_branch": "automation/upstream-21e2b735cb11-356114427f28",
-  "status": "checking",
-  "cloud": "pending",
+  "status": "failed",
+  "cloud": "failure",
   "macos": "pending",
-  "queued_at": "2026-11-11T14:34:11.156261+00:00"
+  "queued_at": "2026-11-11T14:34:11.156261+00:00",
+  "ci_run_id": 43039735382,
+  "ci_url": "https://github.com/poco0222/comet/actions/runs/43039735382",
+  "reason": "检查失败，正式分支未改动。"
 }

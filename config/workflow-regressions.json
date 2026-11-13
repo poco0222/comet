@@ -11668,6 +11668,45 @@
           ]
         }
       ]
+    },
+    {
+      "id": "native-successor-checks-after-checkpoint-recovery",
+      "sources": ["report:2026-11-13-sam-native-restored-check-input-missing"],
+      "behavior": "Run fresh Native successor checks when the restored Run has historical receipts but their input snapshots are absent from the current Runtime.",
+      "coverageLevel": "public-cli",
+      "reproduction": "Create a Native v3 Run in a temporary coordinator with two Git repositories, complete a check, and return to Build. Restore the portable checkpoint in a new checkout instance at the same path, submit the successor, and run native next. Installed 0.5.3 at 9fe250e stops before the first check with a missing raw input record.",
+      "expected": "Bind checks to the new Builder's actual inputs, execute the repeatable check once, and dispatch Verify with the original Run and Shape and intact historical receipts.",
+      "forbidden": "Reuse an unverifiable historical receipt, fabricate its snapshot from current files, or modify the previous Runtime's input record.",
+      "rootCause": "The new check treated the most recent historical afterRef as a required input before it could capture the new candidate; reuse also read the missing snapshot outside its evidence validation fallback.",
+      "tests": [
+        {
+          "file": "test/domains/comet-native/native-sdk-blocked-recovery.test.ts",
+          "namePattern": "^blocked Verifier recovery command contract runs fresh checks for a successor after recovering a checkpoint without old raw inputs$",
+          "requiredNames": [
+            "blocked Verifier recovery command contract runs fresh checks for a successor after recovering a checkpoint without old raw inputs"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "native-verify-ignore-codegraph-daemon-files",
+      "sources": ["report:2026-11-13-sam-native-codegraph-daemon-snapshot"],
+      "behavior": "Keep CodeGraph daemon files out of Native candidate input while checking ordinary files in the same directory.",
+      "coverageLevel": "public-cli",
+      "reproduction": "Submit a successor candidate in a temporary non-Git coordinator, then start a local socket at .codegraph/daemon.sock and create daemon.pid. Installed 0.5.3 at 9fe250e rejects the check outcome as an incomplete snapshot.",
+      "expected": "The CodeGraph daemon files do not affect input completeness or change the candidate; the normal check and Verify handoff succeed.",
+      "forbidden": "Exclude ordinary project files under .codegraph or accept their unreviewed edits.",
+      "rootCause": "The CodeGraph exclusion recognized database files and writer.pid but omitted the daemon's socket and PID lock.",
+      "tests": [
+        {
+          "file": "test/domains/comet-native/native-sdk-blocked-recovery.test.ts",
+          "namePattern": "^blocked Verifier recovery command contract checks a successor with a CodeGraph (daemon|project input) change$",
+          "requiredNames": [
+            "blocked Verifier recovery command contract checks a successor with a CodeGraph daemon change",
+            "blocked Verifier recovery command contract checks a successor with a CodeGraph project input change"
+          ]
+        }
+      ]
     }
   ]
 }

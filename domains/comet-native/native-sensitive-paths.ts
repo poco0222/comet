@@ -35,7 +35,7 @@ export function isNativeEnvFileName(name: string): boolean {
 }
 
 export function isNativeCodeGraphCachePath(relativeRef: string): boolean {
-  return /(?:^|\/)\.codegraph\/(?:codegraph\.db(?:-(?:wal|shm|journal))?|writer\.pid)$/u.test(
+  return /(?:^|\/)\.codegraph\/(?:codegraph\.db(?:-(?:wal|shm|journal))?|writer\.pid|daemon\.(?:pid|sock))$/u.test(
     relativeRef.replaceAll('\\', '/'),
   );
 }

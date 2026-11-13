@@ -1,6 +1,7 @@
 import { execFileSync, spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { promises as fs } from 'node:fs';
+import { createServer } from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
@@ -589,6 +590,21 @@ async function executeAlternative(action: Alternative) {
   );
 }
 
+function runPublicNative(projectRoot: string, ...args: string[]) {
+  const result = spawnSync(
+    process.execPath,
+    [
+      path.resolve(process.env.COMET_TEST_PACKAGE_ROOT ?? '.', 'bin/comet.js'),
+      'native',
+      ...args,
+      '--json',
+    ],
+    { cwd: projectRoot, encoding: 'utf8', timeout: 30_000 },
+  );
+  if (result.error) throw result.error;
+  return result;
+}
+
 async function archiveReadyFixture(
   options: {
     inProjectRequests?: boolean;
@@ -1017,6 +1033,175 @@ fs.rename = async (from, to) => {
       });
       expect(runs).toBe('once\nonce\n');
       expect(run.actions.at(-1)).toMatchObject({ stepId: 'verify.verifier', status: 'pending' });
+    },
+  );
+
+  it('runs fresh checks for a successor after recovering a checkpoint without old raw inputs', async () => {
+    const f = await blockedFixture({
+      version: '3',
+      repeatableChecks: true,
+      nonGitEnvironment: true,
+    });
+    const original: WorkflowRun = f.run;
+    const prior = original.actions.find(({ stepId }) => stepId === 'verify.checks')!;
+    const { afterRef } = (prior.outcome!.output as { rawInput: { afterRef: string } }).rawInput;
+    const previousRoot = resolveWorkspaceRuntimeRootSync(f.projectRoot);
+    const previousInput = await fs.readFile(path.join(previousRoot, afterRef), 'utf8');
+    const repair = (await alternatives(f)).find(({ name }) => name === 'revise-implementation')!;
+    const revised = await executeAlternative(repair);
+    expect(revised.exitCode, revised.stdout || revised.stderr).toBe(0);
+    const builder = (await f.dispatch({ operation: 'inspect', runId: f.name })).actions.find(
+      (action: RuntimeAction) => action.status === 'pending',
+    )!;
+    expect(builder.stepId).toBe('build.builder');
+
+    // Recreate this checkout while keeping the old Runtime and its records.
+    const oldCheckout = path.join(f.root, 'previous-checkout');
+    await fs.rename(f.projectRoot, oldCheckout);
+    await fs.cp(oldCheckout, f.projectRoot, {
+      recursive: true,
+      filter: (source) => source !== path.join(oldCheckout, '.comet/runtime'),
+    });
+    const currentRoot = resolveWorkspaceRuntimeRootSync(f.projectRoot);
+    expect(currentRoot).not.toBe(previousRoot);
+    const before = runPublicNative(f.projectRoot, 'status', f.name);
+    expect(JSON.parse(before.stdout).data.recovery.code).toBe('runtime-recovery-required');
+    const restored = runPublicNative(f.projectRoot, 'doctor', f.name, '--repair', '--confirmed');
+    expect(JSON.parse(restored.stdout).data.repaired).toBe(true);
+    await expect(fs.stat(path.join(currentRoot, afterRef))).rejects.toMatchObject({
+      code: 'ENOENT',
+    });
+
+    const build: WorkflowRun = await f.dispatch({ operation: 'inspect', runId: f.name });
+    const restoredBuilder = build.actions.find(({ status }) => status === 'pending')!;
+    expect(restoredBuilder.id).toBe(builder.id);
+    await fs.writeFile(path.join(f.projectRoot, 'candidate.txt'), 'successor implementation\n');
+    const candidate: WorkflowRun = await f.record(
+      restoredBuilder,
+      original.outputs['build.builder'].value,
+      'successor-builder',
+    );
+    const check = candidate.actions.find(({ status }) => status === 'pending')!;
+    expect(check.stepId).toBe('verify.checks');
+    const result = runPublicNative(f.projectRoot, 'next', f.name);
+    const run: WorkflowRun = await f.dispatch({ operation: 'inspect', runId: f.name });
+    const latest = run.actions.find(({ id }) => id === check.id)!;
+    expect(result.status, latest.reason || result.stdout || result.stderr).toBe(0);
+    expect(run.runId).toBe(original.runId);
+    const state = parseNativePortableState(run.state);
+    expect(state.shape_confirmation_hash).toBe(
+      parseNativePortableState(original.state).shape_confirmation_hash,
+    );
+    const historical = run.actions.find(({ id }) => id === prior.id)!;
+    expect(historical.status).toBe('succeeded');
+    expect(historical.outcome?.output).toEqual(prior.outcome?.output);
+    expect(latest.status).toBe('succeeded');
+    const output = latest.outcome!.output as {
+      checks: [{ id: string; status: string; reusedFrom?: unknown }];
+      rawInput: { afterRef: string };
+    };
+    expect(output.checks).toMatchObject([{ id: 'one-shot', status: 'passed' }]);
+    expect(output.checks[0].reusedFrom).toBeUndefined();
+    expect(
+      await fs.readFile(path.join(currentRoot, output.rawInput.afterRef), 'utf8'),
+    ).toBeTruthy();
+    await expect(fs.stat(path.join(currentRoot, afterRef))).rejects.toMatchObject({
+      code: 'ENOENT',
+    });
+    expect(await fs.readFile(path.join(previousRoot, afterRef), 'utf8')).toBe(previousInput);
+    expect(await fs.readFile(path.join(f.projectRoot, 'dist/check-count'), 'utf8')).toBe(
+      'once\nonce\n',
+    );
+    const verifier = run.actions.at(-1)!;
+    expect(verifier).toMatchObject({ stepId: 'verify.verifier', status: 'pending' });
+    await f.record(
+      verifier,
+      {
+        candidateId: state.builder_handoff!.candidate_id,
+        verifierExecutionRef: 'successor-verifier',
+        response: {
+          kind: 'final-result',
+          result: {
+            iteration: state.loop.iteration,
+            attempt: state.loop.attempt,
+            verdict: 'pass',
+            acceptance: [{ id: 'A1', result: 'passed', reason: 'Verified the successor.' }],
+            requestReview: { result: 'aligned', reason: 'Meets the approved request.' },
+            risks: [],
+            summary: 'The successor meets the acceptance requirement.',
+          },
+        },
+      },
+      'successor-verifier',
+    );
+    const verified = runPublicNative(f.projectRoot, 'next', f.name);
+    expect(verified.status, verified.stdout || verified.stderr).toBe(0);
+    const ready: WorkflowRun = await f.dispatch({ operation: 'inspect', runId: f.name });
+    expect(ready.waits.at(-1)).toMatchObject({ stepId: 'verify.confirm', status: 'pending' });
+    expect(await fs.readFile(path.join(f.projectRoot, 'dist/check-count'), 'utf8')).toBe(
+      'once\nonce\n',
+    );
+  });
+
+  it.each(['daemon', 'project input'] as const)(
+    'checks a successor with a CodeGraph %s change',
+    async (kind) => {
+      const f = await blockedFixture({
+        version: '3',
+        repeatableChecks: true,
+        nonGitEnvironment: true,
+      });
+      const repair = (await alternatives(f)).find(({ name }) => name === 'revise-implementation')!;
+      expect((await executeAlternative(repair)).exitCode).toBe(0);
+      const build: WorkflowRun = await f.dispatch({ operation: 'inspect', runId: f.name });
+      const directory = path.join(f.projectRoot, '.codegraph');
+      await fs.mkdir(directory);
+      const candidate: WorkflowRun = await f.record(
+        build.actions.find(({ status }) => status === 'pending')!,
+        f.run.outputs['build.builder'].value,
+        'successor-builder',
+      );
+      let daemon: ReturnType<typeof createServer> | undefined;
+      try {
+        if (kind === 'daemon') {
+          await fs.writeFile(path.join(directory, 'daemon.pid'), 'pid lock\n');
+          if (process.platform !== 'win32') {
+            // Bind through a short alias to stay below the Unix socket path limit.
+            const alias = await fs.mkdtemp(path.join(os.tmpdir(), 'cg-'));
+            roots.push(alias);
+            await fs.symlink(directory, path.join(alias, 'index'), 'dir');
+            daemon = createServer();
+            await new Promise<void>((resolve, reject) =>
+              daemon!.once('error', reject).listen(path.join(alias, 'index/daemon.sock'), resolve),
+            );
+            expect((await fs.lstat(path.join(directory, 'daemon.sock'))).isSocket()).toBe(true);
+          }
+        } else {
+          await fs.writeFile(path.join(directory, 'project-input.json'), '{}\n');
+        }
+        const result = runPublicNative(f.projectRoot, 'next', f.name);
+        const run: WorkflowRun = await f.dispatch({ operation: 'inspect', runId: f.name });
+        const check = candidate.actions.find(({ status }) => status === 'pending')!;
+        const latest = run.actions.find(({ id }) => id === check.id)!;
+        const runs = await fs.readFile(path.join(f.projectRoot, 'dist/check-count'), 'utf8');
+        if (kind === 'project input') {
+          expect(result.status).not.toBe(0);
+          expect(JSON.parse(result.stdout).summary).toContain('Builder 交接后的候选实现内容已变化');
+          expect(runs).toBe('once\n');
+        } else {
+          expect(result.status, result.stdout || result.stderr).toBe(0);
+          expect(latest).toMatchObject({
+            status: 'succeeded',
+            outcome: { output: { checks: [{ id: 'one-shot', status: 'passed' }] } },
+          });
+          expect(run.actions.at(-1)).toMatchObject({
+            stepId: 'verify.verifier',
+            status: 'pending',
+          });
+        }
+      } finally {
+        if (daemon?.listening) await new Promise<void>((resolve) => daemon!.close(() => resolve()));
+      }
     },
   );
 

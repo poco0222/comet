@@ -223,6 +223,15 @@ async function readRawInput(root: string, run: Readonly<WorkflowRun>, ref: strin
   return readNativeRawInput(root, `${checkRuntimeRef(run)}/inputs`, ref);
 }
 
+async function readPreviousCheckInput(root: string, run: Readonly<WorkflowRun>, ref: string) {
+  try {
+    return await readRawInput(root, run, ref);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+    return undefined;
+  }
+}
+
 const rawInputChanges = nativeRawInputChanges;
 
 function builderInputRef(
@@ -1232,31 +1241,31 @@ async function reusableReviewedCheck(options: {
     );
     const snapshot =
       typeof options.snapshot === 'function' ? await options.snapshot() : options.snapshot;
-    const original = await readRawInput(
-      paths.workspaceRuntimeRoot,
-      options.run,
-      output.rawInput.afterRef,
-    );
-    if (
-      !original.complete ||
-      !snapshot.complete ||
-      original.projectRoot !== snapshot.projectRoot ||
-      original.contextHash !== snapshot.contextHash
-    )
-      return null;
-    if (
-      original.contentHash !== snapshot.contentHash &&
-      !(await hasNativeCheckInputJudgment({
-        run: options.run,
-        action: prior,
-        checkId: check.id,
-        paths,
-        state,
-        snapshot,
-      }))
-    )
-      return null;
     try {
+      const original = await readRawInput(
+        paths.workspaceRuntimeRoot,
+        options.run,
+        output.rawInput.afterRef,
+      );
+      if (
+        !original.complete ||
+        !snapshot.complete ||
+        original.projectRoot !== snapshot.projectRoot ||
+        original.contextHash !== snapshot.contextHash
+      )
+        return null;
+      if (
+        original.contentHash !== snapshot.contentHash &&
+        !(await hasNativeCheckInputJudgment({
+          run: options.run,
+          action: prior,
+          checkId: check.id,
+          paths,
+          state,
+          snapshot,
+        }))
+      )
+        return null;
       await validatedCheckResults({
         run: options.run,
         action: prior,
@@ -1269,9 +1278,7 @@ async function reusableReviewedCheck(options: {
         observedInputs: snapshot,
       });
     } catch (error) {
-      reportCometRuntimeProgress(
-        `原检查 ${check.id} 的证据无法复用，执行当前检查：${String(error)}`,
-      );
+      reportCometRuntimeProgress(`原检查 ${check.id} 的证据无法复用：${String(error)}`);
       return null;
     }
     return {
@@ -1312,7 +1319,7 @@ async function assertNativeRefreshCheckReuse(options: {
       );
     const raw = (prior?.outcome?.output as unknown as NativeSdkCheckOutcome | undefined)?.rawInput;
     const original = raw
-      ? await readRawInput(
+      ? await readPreviousCheckInput(
           await resolveWorkspaceRuntimeRoot(options.projectRoot),
           options.run,
           raw.afterRef,
@@ -1455,15 +1462,16 @@ export const nativeSdkCheckExecutor: RuntimeExecutor = {
         (entry) =>
           (entry.outcome?.output as unknown as NativeSdkCheckOutcome | undefined)?.rawInput,
       );
-    const previousRaw = previousInput
-      ? await readRawInput(
+    // 从便携检查点恢复的 Run 可能仍引用旧工作区的输入缓存。
+    let previousRaw = previousInput
+      ? await readPreviousCheckInput(
           paths.workspaceRuntimeRoot,
           run,
           (previousInput.outcome!.output as unknown as NativeSdkCheckOutcome).rawInput!.afterRef,
         )
-      : !state.children_contract_hash && action.stepId !== 'build.checks'
-        ? ((await readNativeSdkBuilderInputs(run, context.projectRoot)) ?? undefined)
-        : undefined;
+      : undefined;
+    if (!previousRaw && !state.children_contract_hash && action.stepId !== 'build.checks')
+      previousRaw = (await readNativeSdkBuilderInputs(run, context.projectRoot)) ?? undefined;
     const rawBefore = await nativeRawInputSnapshot({
       ...fingerprintOptions,
       previous: previousRaw,

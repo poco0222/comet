@@ -36,8 +36,9 @@ export async function projectRootFrom(
 
   const discoveryStart = request.cwd;
   const discovered = await discoverCachedNativeProject(discoveryStart);
-  if (await inspectCometRuntimeWriteTargets(discovered, request)) return discovered;
-  return configuredProjectFrom(discoveryStart);
+  const resolved = await resolveCometHookProjectRoot(discovered, request);
+  if (await inspectCometRuntimeWriteTargets(resolved, request)) return resolved;
+  return configuredProjectFrom(resolved);
 }
 
 async function configuredProjectFrom(projectRoot: string): Promise<string | null> {

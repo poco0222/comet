@@ -189,6 +189,62 @@ describe('Comet Hook platform adapter', () => {
     });
   });
 
+  it('normalizes Codex command patches and preserves concrete write proposals', () => {
+    const command = [
+      '*** Begin Patch',
+      '*** Update File: src/existing.ts',
+      '@@',
+      '-old',
+      '+new',
+      '*** Add File: src/new.ts',
+      '+created',
+      '*** Delete File: src/old.ts',
+      '*** End Patch',
+    ].join('\n');
+    const targets = ['src/existing.ts', 'src/new.ts', 'src/old.ts'];
+    expect(
+      parseCometHookRequest(JSON.stringify({ tool_name: 'apply_patch', tool_input: { command } })),
+    ).toEqual({
+      intent: 'write',
+      targets,
+      toolName: 'apply_patch',
+      writes: targets.map((file) => ({ path: file, patch: command })),
+    });
+  });
+
+  it('includes both source and destination of patch moves', () => {
+    const patch = [
+      '*** Begin Patch',
+      '*** Update File: docs/note.md',
+      '*** Move to: src/app.ts',
+      '@@',
+      '-old',
+      '+new',
+      '*** End Patch',
+    ].join('\n');
+    for (const input of [
+      patch,
+      JSON.stringify({ tool_name: 'apply_patch', tool_input: { patch } }),
+      JSON.stringify({ tool_name: 'apply_patch', tool_input: { command: patch } }),
+    ]) {
+      expect(parseCometHookRequest(input)).toMatchObject({
+        intent: 'write',
+        targets: ['docs/note.md', 'src/app.ts'],
+      });
+    }
+  });
+
+  it('does not interpret a shell command as an apply_patch payload', () => {
+    expect(
+      parseCometHookRequest(
+        JSON.stringify({
+          tool_name: 'Bash',
+          tool_input: { command: "printf '%s' '\n*** Add File: src/app.ts\n'" },
+        }),
+      ),
+    ).toEqual({ intent: 'unknown', targets: [], toolName: 'Bash' });
+  });
+
   it('normalizes standard unified-diff headers from raw patch input', () => {
     const patch = ['--- a/src/old.ts', '+++ b/src/new.ts'].join('\n');
 

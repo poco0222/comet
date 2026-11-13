@@ -1,6 +1,8 @@
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
 
+import { inspectGitWorktree, samePath } from '../../platform/paths/git-worktree.js';
+import { normalizeWorkflowRelativePath } from '../workflow-contract/project-config.js';
 import { defaultProjectConfig, readProjectConfig } from './native-config.js';
 import { atomicWriteText } from './native-atomic-file.js';
 import {
@@ -24,18 +26,32 @@ import {
   ensureNativeDirectories,
   nativeChangeArtifactPaths,
   nativeProjectPaths,
+  PROJECT_CONFIG_FILE,
 } from './native-paths.js';
 import { nativePortableContinuation } from './native-portable-continuation.js';
 import { createNativePortableChange, nativePortableChangeDir } from './native-portable-runtime.js';
 import { selectNativeChange } from './native-selection.js';
 import { prepareNativeWorkspace } from './native-workspace-preparation.js';
+import {
+  planNativeWorkspaceGroup,
+  readNativeWorkspaceGroup,
+  readNativeWorkspaceGroupPlan,
+  readNativeWorkspaceGroupRecord,
+} from './native-workspace-group.js';
 import { recordNativeWorkspaceConfig } from './native-workspace-config.js';
+import { planNativeWorkspaceSetup } from './native-workspace-setup.js';
+import { canonicalHash } from './native-canonical-hash.js';
 import { type NativeWorkspaceIsolation } from './native-workspace.js';
 import { ensureCometProjectGitignore } from '../workflow-contract/project-gitignore.js';
-import { assertChangeNotSdkOwned } from '../workflow-contract/change-runtime-owner.js';
+import {
+  assertChangeNotSdkOwned,
+  readSdkChangeOwner,
+} from '../workflow-contract/change-runtime-owner.js';
+import { inspectNativeSdkRun } from './native-runtime-ownership.js';
 import { createNativeSdkChange } from './native-sdk-create.js';
 import { parseNativePortableState } from './native-portable-state.js';
 import { projectNativeSdkStatus } from './native-sdk-status.js';
+import type { CometProjectConfig } from './native-types.js';
 import {
   assertNoArguments,
   languageOption,
@@ -43,6 +59,7 @@ import {
   requiredPositional,
   success,
   takeOption,
+  takeFlag,
   type DispatchResult,
 } from './native-cli-shared.js';
 
@@ -155,6 +172,49 @@ async function discoverNativeCapability(
   }
 }
 
+async function suggestNativeRepositoryRegistration(
+  projectRoot: string,
+  config: CometProjectConfig | null,
+  language: 'en' | 'zh-CN',
+): Promise<void> {
+  if (
+    inspectGitWorktree(projectRoot).isGitWorktree ||
+    (await readNativeWorkspaceGroupRecord(projectRoot))
+  )
+    return;
+  const artifactDirectory = (config?.native.artifact_root ?? 'docs').split('/')[0];
+  const repositories: string[] = [];
+  for (const entry of await fs.readdir(projectRoot, { withFileTypes: true })) {
+    if (!entry.isDirectory() || entry.name.startsWith('.') || entry.name === artifactDirectory)
+      continue;
+    try {
+      if (normalizeWorkflowRelativePath(entry.name, 'repositories.path') !== entry.name) continue;
+    } catch {
+      continue;
+    }
+    const root = path.join(projectRoot, entry.name);
+    const git = await fs.lstat(path.join(root, '.git')).catch((error: NodeJS.ErrnoException) => {
+      if (error.code === 'ENOENT') return null;
+      throw error;
+    });
+    if (!git?.isDirectory() && !git?.isFile()) continue;
+    const checkout = inspectGitWorktree(root);
+    if (
+      checkout.currentWorktreeRoot &&
+      samePath(root, checkout.currentWorktreeRoot) &&
+      !checkout.isSecondaryWorktree
+    )
+      repositories.push(entry.name);
+  }
+  if (!repositories.length) return;
+  const message =
+    language === 'zh-CN'
+      ? `在项目根目录下发现 Git 仓库，当前项目尚未登记子仓。${config ? '' : '请先在项目根目录运行 comet native init。'}确认参与范围后，把选中的条目加入 ${PROJECT_CONFIG_FILE} 顶层，再重试原命令。`
+      : `Found Git repositories directly under the project root, but none are registered.${config ? '' : ' Run comet native init from the project root first.'} Confirm which repositories to include, add the selected entries to the top level of ${PROJECT_CONFIG_FILE}, then retry.`;
+  const entries = repositories.sort().map((ref) => `  - path: ${JSON.stringify(ref)}`);
+  throw new NativeUsageError([message, '', 'repositories:', ...entries].join('\n'));
+}
+
 export async function nativeNewCommand(
   args: string[],
   projectRoot: string,
@@ -169,6 +229,9 @@ export async function nativeNewCommand(
   const changeBranch = takeOption(args, '--change-branch');
   const targetBranch = takeOption(args, '--target-branch');
   const worktreePath = takeOption(args, '--worktree-path');
+  const dryRun = takeFlag(args, '--dry-run');
+  const planHash = takeOption(args, '--plan-hash');
+  const setupFile = takeOption(args, '--setup');
   const task = takeOption(args, '--task');
   if (task !== undefined && !task.trim()) throw new NativeUsageError('--task must not be empty');
   const capability = takeOption(args, '--capability');
@@ -182,6 +245,68 @@ export async function nativeNewCommand(
   if (config?.native.pending_root_move) {
     throw new Error(`Native root move ${config.native.pending_root_move.id} is incomplete`);
   }
+  if (runtimeFormat === 'sdk' && isolation === 'worktree' && !config?.repositories) {
+    await suggestNativeRepositoryRegistration(projectRoot, config, language);
+  }
+  let groupPlan;
+  if (config?.repositories) {
+    if (runtimeFormat !== 'sdk') throw new Error('Native workspace groups require --runtime sdk');
+    const currentGroup = await readNativeWorkspaceGroup(projectRoot);
+    if (!currentGroup && isolation === 'branch') {
+      throw new NativeUsageError(
+        'Native repository coordinators support --isolation current or worktree',
+      );
+    }
+    if (!currentGroup && isolation === 'worktree') {
+      if (changeBranch || targetBranch)
+        throw new NativeUsageError(
+          'Native repository groups do not accept --change-branch or --target-branch; configure target_branch for each repository',
+        );
+      const setup = setupFile
+        ? await planNativeWorkspaceSetup(projectRoot, setupFile, config.repositories)
+        : undefined;
+      groupPlan =
+        (await readNativeWorkspaceGroupPlan(projectRoot, name)) ??
+        (await planNativeWorkspaceGroup({
+          projectRoot,
+          name,
+          repositories: config.repositories.map((entry) => ({
+            path: entry.path,
+            ...(entry.target_branch ? { targetBranch: entry.target_branch } : {}),
+          })),
+          ...(worktreePath ? { worktreePath } : {}),
+          configuration: sourceConfig,
+          ...(setup ? { setup } : {}),
+        }));
+      if (
+        setup &&
+        canonicalHash('setup', setup) !== canonicalHash('setup', groupPlan.setup ?? null)
+      )
+        throw new Error(
+          'Workspace setup differs from the original creation plan; use its recorded setup or create another task',
+        );
+      if (worktreePath && path.resolve(projectRoot, worktreePath) !== groupPlan.projectRoot)
+        throw new Error('Native workspace path differs from the original creation plan');
+      if (planHash !== undefined && planHash !== groupPlan.hash)
+        throw new Error(
+          'Native workspace preflight changed; inspect --dry-run before retrying with its --plan-hash',
+        );
+      if (dryRun)
+        return success(
+          'new',
+          { dryRun: true, plan: groupPlan },
+          `Prepared Native workspace group plan ${groupPlan.hash}\n`,
+        );
+    } else if (dryRun || planHash || setupFile)
+      throw new NativeUsageError(
+        currentGroup
+          ? 'Use the coordinator root to inspect the workspace creation plan'
+          : '--dry-run, --plan-hash and --setup require --isolation worktree',
+      );
+  } else if (dryRun || planHash || setupFile)
+    throw new NativeUsageError(
+      '--dry-run, --plan-hash and --setup require configured repositories',
+    );
   const prepared = await prepareNativeWorkspace({
     projectRoot,
     name,
@@ -190,6 +315,7 @@ export async function nativeNewCommand(
     ...(targetBranch ? { targetBranch } : {}),
     ...(worktreePath ? { worktreePath } : {}),
     sourceConfig,
+    ...(groupPlan ? { groupPlan } : {}),
   });
   projectRoot = prepared.projectRoot;
   if (runtimeFormat === 'compat') await assertChangeNotSdkOwned(projectRoot, 'native', name);
@@ -200,6 +326,27 @@ export async function nativeNewCommand(
     throw new Error(`Native root move ${config.native.pending_root_move.id} is incomplete`);
   }
   const paths = await nativeProjectPaths(projectRoot, config.native.artifact_root);
+  if (prepared.binding.groupHash && (await readSdkChangeOwner(projectRoot, 'native', name))) {
+    const existing = await inspectNativeSdkRun(projectRoot, name);
+    const input = existing.run.input as { task?: string };
+    if (
+      existing.state.workspace.group_hash !== prepared.binding.groupHash ||
+      (task !== undefined && task !== input.task)
+    )
+      throw new Error('Native task creation recovery differs from the original Run');
+    return {
+      executionCwd: projectRoot,
+      ...success(
+        'new',
+        {
+          ...(await projectNativeSdkStatus({ projectRoot, name }, existing)),
+          preparation: prepared.preparation,
+          resumed: true,
+        },
+        `Resumed Native change ${name}\n`,
+      ),
+    };
+  }
   await ensureNativeDirectories(paths);
   // 保留旧 Runtime 路径及迁移 fence 的 Git 排除，避免兼容文件进入候选输入。
   await ensureCometProjectGitignore(projectRoot);

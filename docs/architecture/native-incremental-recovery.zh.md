@@ -22,6 +22,23 @@
 - `workflow-contract/edit-review.ts` 保存原始变化和当前 Agent 判断；`comet edit-review observe` 合并连续保存，`record` 明确记录语义、影响及保留的检查。判断只覆盖已绑定的内容，再次编辑后只补处理新增变化。
 - `native-recovery.ts` 投影恢复契约；`native-command-recovery.ts` 将只读文件锁观察、现有归档收尾结果与 continuation 汇总到同一结构。状态转换仍由原领域 Runtime 执行。
 
+### 排除本机配置
+
+项目需要避免读取某些本机配置时，在开始 Build 前把路径登记到 `.comet/config.yaml`：
+
+```yaml
+native:
+  snapshot:
+    exclude:
+      - 'server/**/application-prod.yml'
+```
+
+路径相对于项目根，多仓任务使用协调根下的仓库路径前缀。新任务工作树和更新安装会保留自定义排除项。规则在候选和检查输入读取前生效，检查收据同时绑定该范围。修改规则后沿用原任务，按新范围提交候选并重新建立适用的检查证据。Git 的忽略规则仍用于枚举文件，项目命令仍自行读取运行所需的配置。
+
+内置 Native v3 的 Verifier 已领取任务时，`native status <change>` 与 `edit-review observe` 会返回 `recovery`。原 Verifier 结束验收操作后，使用自己的会话提交 `request` 和 `recoveryArgs`。Runtime 重新核对候选、原领取与排除规则，将验收交回同一 Run 的 Builder。Shape 批准和旧检查保留在历史中，新候选按当前规则建立证据。
+
+CodeGraph 的本地数据库及其临时文件由 Runtime 自动跳过。已完成、仅涉及这些文件的非行为变更复核保留在历史中。多仓交付会把排除路径的未暂存改动留在原工作树。如果暂存内容已经包含这些改动，交付会在创建提交前停止。
+
 ## 修改后的推进判定
 
 | 当前修改                            | 推进方式                              | 需要重新建立的证据                                     |
@@ -51,6 +68,8 @@ Native SDK 的 `checkIds` 是本轮明确执行的集合，未选检查必须有
 权限不足、外部文件占用和仍活跃的写入不能承诺自动消失。完成条件是阻塞原因可定位、原工作不丢失、前提满足后有可执行且经过验证的恢复入口。
 
 ## 验收
+
+普通 Native SDK 多仓任务在归档后使用独立的 Git 交付日志，不增加第二套工作流阶段。恢复绑定原候选、分仓提交、集成输入和检查日志；目标分支更新后建立新集成轮次，保留旧记录并重新检查。部分合并不回滚，重复调用继续原收据。共享 Specs 在全部代码合并后按创建基线同步，冲突时保留双方内容和已经完成的 Git 结果。具体命令及验证边界见 [Native SDK 多仓工作区](native-multi-repository-workspace.zh.md)。
 
 每个新增行为登记到 `config/workflow-regressions.json`，精确关联可执行断言。验收覆盖：后继候选只重跑受影响的可靠范围检查、任意命令保守重跑、环境/包声明/日志变化不误复用、旧收据兼容、正常独立验收与归档、并发修改、活跃/陈旧/未知/损坏锁、执行输出给出的恢复命令，以及归档中断后不重复副作用。
 

@@ -149,9 +149,17 @@ function parseJsonValue(value: unknown): unknown {
   }
 }
 
-function readToolArguments(input: Record<string, unknown>): unknown {
+function readToolArguments(input: Record<string, unknown>, toolName: string | null): unknown {
   for (const key of ['tool_input', 'toolInput', 'toolArgs', 'tool_args', 'arguments'] as const) {
-    if (input[key] !== undefined) return parseJsonValue(input[key]);
+    if (input[key] === undefined) continue;
+    const args = parseJsonValue(input[key]);
+    if (
+      normalizedToolName(toolName ?? '') === 'applypatch' &&
+      isRecord(args) &&
+      typeof args.command === 'string'
+    )
+      return args.command;
+    return args;
   }
   return input;
 }
@@ -159,7 +167,7 @@ function readToolArguments(input: Record<string, unknown>): unknown {
 function patchTargets(source: string): string[] {
   const targets: string[] = [];
   const patterns = [
-    /^\*\*\* (?:Add|Update|Delete) File:\s+(.+?)\s*$/gmu,
+    /^\*\*\* (?:(?:Add|Update|Delete) File|Move to):\s+(.+?)\s*$/gmu,
     /^\+\+\+\s+(?:b\/)?(.+?)\s*$/gmu,
   ];
   for (const pattern of patterns) {
@@ -328,7 +336,7 @@ export function parseCometHookRequest(source: string, filePath?: string): CometH
   if (!isRecord(input)) return { intent: 'unknown', targets: [], toolName: null };
 
   const toolName = readToolName(input);
-  const args = readToolArguments(input);
+  const args = readToolArguments(input, toolName);
   const targets = collectTargets(input, args);
   const writes = collectWriteProposals(args);
   const rawWorkingDirectory = readWorkingDirectory(input);

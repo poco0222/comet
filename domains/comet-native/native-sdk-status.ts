@@ -1,4 +1,7 @@
 import { withGitWorktreeReadScope } from '../../platform/paths/git-worktree.js';
+import { readNativeWorkspaceGroup } from './native-workspace-group.js';
+import { inspectNativeWorkspaceGroupDelivery } from './native-workspace-group-delivery.js';
+import { readNativeWorkspaceCleanupStatus } from './native-workspace-group-cleanup.js';
 import { inspectNativeSdkCancellation } from './native-sdk-cancellation.js';
 import { nativeSdkArchivedReportWarning } from './native-sdk-report.js';
 import { inspectNativeSdkRunDiagnostics } from './native-sdk-diagnostics.js';
@@ -42,7 +45,9 @@ export async function inspectNativeSdkStatus(options: {
   name: string;
   details?: boolean;
   readOnly?: boolean;
-}) {
+}): Promise<NativeSdkStatusProjection> {
+  const retained = await readNativeWorkspaceCleanupStatus(options.projectRoot, options.name);
+  if (retained) return retained;
   const inspection = await inspectNativeSdkRun(options.projectRoot, options.name, {
     readOnly: options.readOnly ?? true,
   });
@@ -63,6 +68,9 @@ async function projectNativeSdkStatusOnce(
   { run, state, artifactRootRef, application }: Awaited<ReturnType<typeof inspectNativeSdkRun>>,
 ) {
   const summary = nativePortableStateSummary(state);
+  const workspaceGroup = state.workspace.group_hash
+    ? await readNativeWorkspaceGroup(options.projectRoot)
+    : null;
   const checkExecutionObservation =
     options.checkExecutionObservation ??
     (await inspectNativeSdkCheckExecutions({
@@ -135,7 +143,22 @@ async function projectNativeSdkStatusOnce(
     candidateId: state.builder_handoff?.candidate_id ?? null,
     shapeConfirmationHash: state.shape_confirmation_hash ?? null,
     blockers: summary.blockers,
-    workspace: projectNativePortableWorkspace({ projectRoot: options.projectRoot }, state),
+    workspace: {
+      ...projectNativePortableWorkspace({ projectRoot: options.projectRoot }, state),
+      ...(workspaceGroup
+        ? {
+            coordinatorRoot: workspaceGroup.plan.coordinatorRoot,
+            delivery: await inspectNativeWorkspaceGroupDelivery(workspaceGroup),
+            planHash: workspaceGroup.plan.hash,
+            repositories: workspaceGroup.plan.repositories.map((entry) => ({
+              path: entry.path,
+              cwd: entry.worktreeRoot,
+              changeBranch: entry.changeBranch,
+              targetBranch: entry.targetBranch,
+            })),
+          }
+        : {}),
+    },
     run: {
       id: run.runId,
       revision: run.revision,
@@ -210,5 +233,7 @@ async function projectNativeSdkStatusOnce(
   };
 }
 
-export type NativeSdkStatusProjection = Awaited<ReturnType<typeof inspectNativeSdkStatus>>;
+export type NativeSdkStatusProjection = Awaited<ReturnType<typeof projectNativeSdkStatusOnce>> & {
+  cleanup?: { planHash: string; removed: string[]; historical: true };
+};
 import { inspectNativeEditReviews } from './native-edit-review.js';

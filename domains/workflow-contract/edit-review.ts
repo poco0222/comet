@@ -17,6 +17,7 @@ import {
 } from './protected-project-path.js';
 
 export interface EditReviewScope {
+  ignoreNonBehavioralPath?: (ref: string) => boolean;
   projectRoot: string;
   runtimeRoot: string;
   workflow: 'native' | 'classic';
@@ -189,9 +190,15 @@ function validRetainedChecks(
 export interface EditReviewObservation extends EditReviewProposal {
   receipt: ReviewReceipt | null;
 }
-function currentEdits(scope: EditReviewScope, review: EditReviewProposal) {
+function currentEdits(scope: EditReviewScope, review: EditReviewProposal | EditReviewObservation) {
+  const ignore =
+    'receipt' in review && review.applied && review.receipt?.decision === 'non-behavioral'
+      ? scope.ignoreNonBehavioralPath
+      : undefined;
   return review.edits.filter(
-    (edit) => !edit.sourceEvidence || scope.approvedSources?.[edit.path] === edit.sourceEvidence,
+    (edit) =>
+      !ignore?.(edit.path) &&
+      (!edit.sourceEvidence || scope.approvedSources?.[edit.path] === edit.sourceEvidence),
   );
 }
 
@@ -239,6 +246,20 @@ async function reviewContent(
   return review.observed
     ? observedContent(scope, edit.path)
     : currentContent(scope, edit.path, review.applied);
+}
+
+function restoredNativeAppliedEdit(
+  review: EditReviewObservation,
+  edit: ReviewedEdit,
+  current: Awaited<ReturnType<typeof reviewContent>>,
+) {
+  return (
+    review.binding.workflow === 'native' &&
+    review.applied === true &&
+    review.receipt?.decision === 'non-behavioral' &&
+    current?.hash === edit.beforeHash &&
+    current.executable === edit.executable
+  );
 }
 
 async function binding(scope: EditReviewScope): Promise<EditReviewProposal['binding']> {
@@ -885,7 +906,10 @@ export async function editReviewContinuation(
         if (!formal) continue;
         const current = await reviewContent(scope, review, edit);
         const expected = review.applied ? edit.afterHash : edit.beforeHash;
-        if ((current?.hash ?? null) !== expected) {
+        if (
+          (current?.hash ?? null) !== expected &&
+          !restoredNativeAppliedEdit(review, edit, current)
+        ) {
           return {
             mode: 'execute',
             commandArgs: [
@@ -983,6 +1007,7 @@ export async function editReviewContinuation(
     if (review.receipt.decision === 'non-behavioral')
       for (const edit of edits) {
         const current = await reviewContent(scope, review, edit);
+        if (restoredNativeAppliedEdit(review, edit, current)) continue;
         if (current?.hash === edit.beforeHash && edit.beforeHash !== edit.afterHash) {
           const input = await editReviewInputReference(scope, review.proposalHash);
           return {
@@ -1551,6 +1576,7 @@ export async function assertEditReviewsComplete(
       const current = await reviewContent(scope, review, edit);
       if (current && current.executable !== edit.executable)
         throw new Error('编辑复核目标的执行权限不匹配');
+      if (restoredNativeAppliedEdit(review, edit, current)) continue;
       if (review.receipt.decision === 'discard') {
         if (review.receipt.authority.kind === 'runtime-superseded') continue;
         if (!reaches(completionEdges(edit.path), edit.beforeHash, current?.hash ?? null))

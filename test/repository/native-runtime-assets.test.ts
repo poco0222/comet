@@ -40,6 +40,7 @@ describe('Native runtime release asset', () => {
       'comet-native/reference/workspace.md',
       'comet-native/scripts/comet-native-runtime.mjs',
       'comet-native/scripts/comet-native-hook-guard.mjs',
+      'comet-native/scripts/comet-native-deliver.mjs',
     ]) {
       expect(manifest.skills).toContain(relative);
     }
@@ -60,6 +61,7 @@ describe('Native runtime release asset', () => {
       'select',
       'next',
       'archive',
+      'deliver',
       'doctor',
     ]) {
       expect(source).toContain(command);
@@ -103,6 +105,7 @@ describe('Native runtime release asset', () => {
       'comet-native-cancel.mjs',
       'comet-native-next.mjs',
       'comet-native-archive.mjs',
+      'comet-native-deliver.mjs',
       'comet-native-doctor.mjs',
       'comet-native-transfer.mjs',
     ];

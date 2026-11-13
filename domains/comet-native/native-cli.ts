@@ -1,5 +1,6 @@
 import { compactCliStdout } from '../workflow-contract/compact-output.js';
 import { nativeArchiveCommand } from './native-archive-command.js';
+import { nativeDeliverCommand } from './native-deliver-command.js';
 import { withCometRuntimeProgress } from '../../platform/process/runtime-metrics.js';
 import { observeRuntimeOperation } from '../../platform/process/runtime-performance.js';
 import { nativeCancelCommand } from './native-cancel-command.js';
@@ -60,6 +61,7 @@ const COMMAND_HANDLERS: Record<string, NativeCommandHandler> = {
   select: nativeSelectCommand,
   next: nativeNextCommand,
   archive: nativeArchiveCommand,
+  deliver: nativeDeliverCommand,
   cancel: nativeCancelCommand,
   check: nativeCheckCommand,
   doctor: nativeDoctorCommand,

@@ -30,6 +30,7 @@ export interface NativeWorkspaceBinding {
   isolation: NativeWorkspaceIsolation;
   changeBranch: string | null;
   targetBranch: string | null;
+  groupHash?: string;
 }
 
 export interface NativeWorkspaceGitProvenance {

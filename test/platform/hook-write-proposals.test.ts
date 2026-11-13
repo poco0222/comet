@@ -72,4 +72,16 @@ describe('Hook concrete write proposals', () => {
       'const a = 1;\n// $& is literal.',
     );
   });
+
+  it('reconstructs content from the Codex command field', () => {
+    const command =
+      '*** Begin Patch\n*** Update File: main.ts\n@@\n const a = 1;\n+// $& is literal.\n*** End Patch';
+    const request = parseCometHookRequest(
+      JSON.stringify({ tool_name: 'apply_patch', tool_input: { command } }),
+    );
+    expect(request.writes).toHaveLength(1);
+    expect(proposedCometHookFileContent(request.writes![0], 'const a = 1;')).toBe(
+      'const a = 1;\n// $& is literal.',
+    );
+  });
 });

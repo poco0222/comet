@@ -96,12 +96,18 @@ export interface WorkflowClassicProjectConfig {
   check_timeout_ms?: number;
 }
 
+export interface WorkflowRepositoryConfig {
+  path: string;
+  target_branch?: string;
+}
+
 export interface WorkflowProjectConfig {
   schema: 'comet.project.v1';
   default_workflow: CometProjectWorkflow;
   workflows?: CometProjectWorkflow[];
   ambient_resume: boolean;
   change_walkthrough?: boolean;
+  repositories?: WorkflowRepositoryConfig[];
   hook?: WorkflowHookProjectConfig;
   memory?: WorkflowMemoryProjectConfig;
   knowledge?: WorkflowKnowledgeProjectConfig;
@@ -111,7 +117,7 @@ export interface WorkflowProjectConfig {
 
 export interface WorkflowGlobalConfig extends Omit<
   WorkflowProjectConfig,
-  'schema' | 'change_walkthrough'
+  'schema' | 'change_walkthrough' | 'repositories'
 > {
   schema: 'comet.global.v1';
 }

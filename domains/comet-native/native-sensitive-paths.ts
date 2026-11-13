@@ -34,6 +34,12 @@ export function isNativeEnvFileName(name: string): boolean {
   return name.toLowerCase().startsWith('.env');
 }
 
+export function isNativeCodeGraphCachePath(relativeRef: string): boolean {
+  return /(?:^|\/)\.codegraph\/(?:codegraph\.db(?:-(?:wal|shm|journal))?|writer\.pid|daemon\.(?:pid|sock))$/u.test(
+    relativeRef.replaceAll('\\', '/'),
+  );
+}
+
 /** Returns a stable exclusion reason for project-relative sensitive paths. */
 export function nativeSensitiveRelativePathReason(relativeRef: string): string | null {
   const segments = relativeRef.replaceAll('\\', '/').split('/').filter(Boolean);

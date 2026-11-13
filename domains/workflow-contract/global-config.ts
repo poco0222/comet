@@ -37,6 +37,8 @@ function parseRoot(source: string): Record<string, unknown> {
 }
 
 function toProjectConfig(config: WorkflowGlobalConfig): WorkflowProjectConfig {
+  if ('repositories' in config)
+    throw new Error('Global Comet config cannot contain project repositories');
   if (config.native?.pending_root_move) {
     throw new Error('Global Comet config cannot contain native.pending_root_move');
   }
@@ -54,6 +56,7 @@ function toProjectConfig(config: WorkflowGlobalConfig): WorkflowProjectConfig {
 function toGlobalConfig(config: WorkflowProjectConfig): WorkflowGlobalConfig {
   const globalFields = { ...config };
   delete globalFields.change_walkthrough;
+  delete globalFields.repositories;
   if (config.native?.pending_root_move) {
     throw new Error('Global Comet config cannot contain native.pending_root_move');
   }
@@ -68,6 +71,8 @@ function toGlobalConfig(config: WorkflowProjectConfig): WorkflowGlobalConfig {
 }
 
 function parseCompleteGlobalConfig(value: Record<string, unknown>): WorkflowGlobalConfig {
+  if (value.repositories !== undefined)
+    throw new Error('Global Comet config cannot contain project repositories');
   const parsed = parseWorkflowProjectConfigDocument(
     JSON.stringify({ ...value, schema: 'comet.project.v1' }),
   ).config;
@@ -174,6 +179,7 @@ export async function writeWorkflowGlobalConfig(
   );
   merged.schema = 'comet.global.v1';
   delete merged.change_walkthrough;
+  delete merged.repositories;
   const language: ProjectConfigLanguage =
     config.native?.language === 'zh-CN' || config.classic?.language === 'zh-CN' ? 'zh-CN' : 'en';
   const output = renderStructuredProjectConfig(merged, language);

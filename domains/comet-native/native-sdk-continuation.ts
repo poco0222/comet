@@ -5,9 +5,13 @@ import {
 } from './native-sdk-verify-decision.js';
 import path from 'node:path';
 import { inspectGitWorktree } from '../../platform/paths/git-worktree.js';
-import { nativeSdkCompletedCheckInputDrift, nativeSdkCheckPlans } from './native-sdk-checks.js';
+import {
+  inspectNativeSdkInputExclusionDrift,
+  nativeSdkCompletedCheckInputDrift,
+  nativeSdkCheckPlans,
+} from './native-sdk-checks.js';
 import { parseNativeVerifierResponse } from './native-verifier-protocol.js';
-import { nativeRecoveryForContinuation } from './native-recovery.js';
+import { nativeRecoveryForContinuation, type NativeRecovery } from './native-recovery.js';
 import { nativeTaskContextRequest } from './native-task-context.js';
 import {
   hashRuntimeValue,
@@ -722,12 +726,86 @@ function sdkDecision(
   };
 }
 
+export async function nativeSdkInputExclusionRecovery(options: {
+  run: WorkflowRun;
+  state: NativePortableState;
+  projectRoot: string;
+}): Promise<NativeRecovery | null> {
+  const { run, state, projectRoot } = options;
+  const action = run.actions.find(
+    ({ stepId, status }) => stepId === 'verify.verifier' && status === 'running',
+  );
+  if (!action?.claim) return null;
+  const output = await inspectNativeSdkInputExclusionDrift(run, action, projectRoot);
+  if (!output) return null;
+  return {
+    schema: 'comet.native.recovery.v1',
+    code: 'candidate-drift',
+    reason: output.summary,
+    affectedPaths: [path.join(projectRoot, '.comet/config.yaml')],
+    owner: {
+      actionId: action.id,
+      attempt: action.attempt,
+      executorId: action.claim.executorId,
+      sessionId: action.claim.sessionId,
+    },
+    diagnosticArgs: sdkCommandArgs(
+      ['comet', 'native', 'status', state.name, '--details'],
+      projectRoot,
+    ),
+    recoveryArgs: sdkCommandArgs(
+      [
+        'comet',
+        'native',
+        'next',
+        state.name,
+        '--action',
+        action.id,
+        '--session',
+        '<actual-verifier-session>',
+        '--result',
+        '<result-json-file>',
+      ],
+      projectRoot,
+    ),
+    request: { status: 'succeeded', output },
+    preconditions:
+      state.language === 'zh-CN'
+        ? [
+            '原 Verifier 结束验收操作并确认可继续后，将 request 保存到项目外的 JSON 文件，用自己的实际会话提交 recoveryArgs。保留原 Run、Shape 与历史证据，交回 Builder 按新范围提交候选。',
+          ]
+        : [
+            'After ending the original verification and confirming continuation is authorized, the original Verifier saves request to a JSON file outside the project and submits recoveryArgs with its own session. The Builder submits a successor under the new scope in the same Run.',
+          ],
+    preserved: {
+      candidateId: output.candidateId,
+      shapeConfirmationHash: state.shape_confirmation_hash ?? null,
+    },
+  };
+}
+
 /** 从同一 Run 投影下一步；SDK 不使用 compat Runner 输入或 workspace finish 决定。 */
 export async function projectNativeSdkContinuation(
   options: Parameters<typeof projectNativeSdkContinuationValue>[0],
 ) {
   const originalProjection = await projectNativeSdkContinuationValue(options);
   let projection = originalProjection;
+  if (!options.applicationId && projection.continuation.mode === 'wait') {
+    const recovery = await nativeSdkInputExclusionRecovery(options).catch(() => null);
+    if (recovery) {
+      return {
+        ...projection,
+        continuation: {
+          ...projection.continuation,
+          recovery,
+          userCommunication: {
+            ...projection.continuation.userCommunication,
+            agentInstruction: `${recovery.reason} ${recovery.preconditions[0]}`,
+          },
+        },
+      };
+    }
+  }
   if (projection.continuation.action === 'review-edit') {
     if (options.state.phase !== 'archive' || projection.continuation.mode !== 'reconcile')
       return projection;

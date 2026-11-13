@@ -2,6 +2,19 @@
 
 All notable changes to @rpamis/comet will be documented in this file.
 
+## What's Changed [0.5.3] - 2026-11-10
+
+### Added
+
+- **Native multi-repository workspaces**: Start a Native SDK task in the coordinator's existing directory, or isolate parallel tasks in separate groups of worktrees. If no repositories are registered, the first worktree request lists discovered child repositories and shows how to register them before creating any worktrees. Preview creation, preserve original working files, prepare explicitly selected local configuration and repeatable environment commands, and keep session writes within their selected task. Task discovery and Hook routing continue to work in the current directory after an unrelated registered worktree is removed. After acceptance and Archive, check the combined integration, merge each local target with resumable receipts, and publish shared Specs without overwriting concurrent changes. Explicit cleanup retains dirty or ignored files, formal artifacts, branches and readable Run history. Classic and Supervisor multi-repository execution are not supported.
+
+### Fixed
+
+- **Native workflow recovery**: Revalidate previously rejected task submissions after their blockers are resolved. Restoring an approved document after a reviewed edit resumes the original task without requiring the edit to be reapplied. After checkpoint recovery, repeatable checks for a newly submitted candidate can produce fresh evidence when historical input files are unavailable.
+- **Native input capture**: Honor project-configured exclusions before reading candidate and check inputs, including tracked files in multi-repository worktrees. Keep exclusion settings across updates. When the scope changes during verification, the original Verifier can return the task to the Builder for fresh evidence in the same Run. Skip CodeGraph's local database and daemon files so local indexing no longer blocks verification.
+- **Native candidate verification**: Ignore Comet's temporary checkpoint files in managed change directories so checkpoint publication does not interrupt verification of an unchanged candidate.
+- **Codex Hook compatibility**: Read `apply_patch` payloads from Codex's `tool_input.command` field so workflow and workspace write guards apply to real tool calls. Check both paths when a patch moves a file, while preserving permitted document edits.
+
 ## What's Changed [0.5.2] - 2026-11-06
 
 ### Added

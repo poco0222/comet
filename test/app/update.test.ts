@@ -3436,6 +3436,7 @@ describe('update command helpers', () => {
         '  snapshot:',
         '    include: ["**/*"]',
         '    exclude: ["custom/generated/**"]',
+        '    max_files: 200',
         '',
       ].join('\n'),
       'utf8',
@@ -3486,7 +3487,7 @@ describe('update command helpers', () => {
     ) as {
       native: { snapshot?: unknown };
     };
-    expect(updated.native.snapshot).toBeUndefined();
+    expect(updated.native.snapshot).toEqual({ exclude: ['custom/generated/**'] });
     for (const relativePath of RETIRED_NATIVE_BUNDLES) {
       await expect(
         fs.access(path.join(installedSkillsRoot, ...relativePath.split('/'))),

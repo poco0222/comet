@@ -21,6 +21,7 @@ import {
   NativeWorkspaceIsolationRequiredError,
 } from './native-change.js';
 import { readProjectConfig, writeProjectConfig } from './native-config.js';
+import { withNativeLockRecovery } from './native-lock.js';
 import { withNativeMutationLock } from './native-mutation-lock.js';
 import {
   assertNativeSdkStartAvailable,
@@ -47,6 +48,7 @@ import {
 } from './native-sdk-state-store.js';
 import type { CometProjectConfig, NativeProjectPaths } from './native-types.js';
 import type { NativeWorkspaceBinding } from './native-workspace.js';
+import { readNativeWorkspaceGroupPlan } from './native-workspace-group.js';
 
 async function startNativeSdkRun(options: {
   paths: NativeProjectPaths;
@@ -181,10 +183,11 @@ export async function restoreNativeSdkChange(
         `Native change ${name} has unresolved external work; restore the original Run history and reconcile its outcome`,
       );
     }
-    assertPortableWorkspaceBindingCurrent(paths.projectRoot, {
+    await assertPortableWorkspaceBindingCurrent(paths.projectRoot, {
       isolation: state.workspace.isolation,
       changeBranch: state.workspace.change_branch,
       targetBranch: state.workspace.target_branch,
+      groupHash: state.workspace.group_hash,
     });
     const initialState = createNativePortableState({
       name,
@@ -215,7 +218,10 @@ export async function createNativeSdkChange(options: {
   return withNativeMutationLock(options.paths, `create SDK change ${options.name}`, async () => {
     if (!NAME_PATTERN.test(options.name))
       throw new Error(`Invalid Native change name: ${options.name}`);
-    assertPortableWorkspaceBindingCurrent(options.paths.projectRoot, options.workspaceBinding);
+    await assertPortableWorkspaceBindingCurrent(
+      options.paths.projectRoot,
+      options.workspaceBinding,
+    );
     const owner = await readChangeRuntimeOwner(options.paths.projectRoot, 'native', options.name);
     if (owner) throw new Error(`Native change ${options.name} already has Runtime ownership`);
     await assertNativeSdkStartAvailable({
@@ -244,18 +250,40 @@ export async function createNativeSdkChange(options: {
     ) {
       await writeProjectConfig(options.paths.projectRoot, options.initialProjectConfig);
     }
-    const run = await startNativeSdkRun({
-      paths: options.paths,
-      name: options.name,
-      task: options.task,
-      workflowVersion: '3',
-      initialState: createNativePortableState({
+    const start = () =>
+      startNativeSdkRun({
+        paths: options.paths,
         name: options.name,
-        language: options.language,
-        workspace: portableWorkspace(options.workspaceBinding),
-        nextAction: 'prepare-shape-confirmation',
-      }),
-    });
+        task: options.task,
+        workflowVersion: '3',
+        initialState: createNativePortableState({
+          name: options.name,
+          language: options.language,
+          workspace: portableWorkspace(options.workspaceBinding),
+          nextAction: 'prepare-shape-confirmation',
+        }),
+      });
+    // 与工作树组创建共用协调锁，避免同名任务同时取得归属。
+    const run =
+      options.workspaceBinding.isolation === 'current' &&
+      !options.workspaceBinding.groupHash &&
+      (await readProjectConfig(options.paths.projectRoot))?.repositories
+        ? await withNativeLockRecovery(
+            [options.paths],
+            `start SDK change ${options.name}`,
+            async () => {
+              const plan = await readNativeWorkspaceGroupPlan(
+                options.paths.projectRoot,
+                options.name,
+              );
+              if (plan)
+                throw new Error(
+                  `Native change ${options.name} already has a registered worktree: ${plan.projectRoot}`,
+                );
+              return start();
+            },
+          )
+        : await start();
     await fs.mkdir(options.paths.changesDir, { recursive: true });
     await fs.mkdir(changeDir);
     await fs.mkdir(path.join(changeDir, 'specs'));

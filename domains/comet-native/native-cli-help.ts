@@ -41,6 +41,7 @@ const HELP: Readonly<Record<string, NativeHelpEntry>> = Object.freeze({
       'select <change-name>         Select a change in its bound workspace.',
       'next <change-name>           Confirm or recover a stable workflow boundary.',
       'archive <change-name>        Preview and execute Archive plus workspace finish.',
+      'deliver <change-name>        Prepare or apply local Git delivery for an archived multi-repository SDK task.',
       'cancel <change-name>         Cancel an unfinished change while keeping its code and workspace.',
       'doctor [<change-name>]       Diagnose, migrate, or rebuild local execution state.',
       'transfer export|import        Move an active Supervisor Child Build to another checkout.',
@@ -98,6 +99,9 @@ const HELP: Readonly<Record<string, NativeHelpEntry>> = Object.freeze({
       '--change-branch <branch>     Change branch; defaults to comet/<change-name>.',
       '--target-branch <branch>     Local base branch; defaults to the current branch.',
       '--worktree-path <path>       Worktree directory; defaults to .worktrees/<change-name>.',
+      '--dry-run                    With --isolation worktree, preview a repository group without creating worktrees or a Run.',
+      '--plan-hash <hash>           Require the exact repository group preflight before creation or recovery.',
+      '--setup <json-file>          Bind explicit ignored local files and repeatable preparation checks to the multi-repository plan.',
     ],
     output:
       'The SDK Run or portable state, canonical artifact paths, and workspace preparation result; compat Runtime changes include the next Runner continuation.',
@@ -153,6 +157,20 @@ const HELP: Readonly<Record<string, NativeHelpEntry>> = Object.freeze({
     output:
       'For compat Runtime changes, the audited state and Build continuation for re-verification. SDK changes receive revise-requirements guidance.',
   },
+  deliver: {
+    usage:
+      'comet native deliver <change-name> [--commit-message <message>] [--refresh <delivery-id> | --cleanup] [--apply <plan-hash>]',
+    purpose:
+      'After SDK acceptance and Archive, commit the unchanged candidate and check all repositories together in isolated integration worktrees. Target branches change only with --apply.',
+    options: [
+      '--commit-message <message>  Message for task commits; defaults to feat: <change-name>. Keep the same message when resuming.',
+      '--refresh <delivery-id>     Retain the previous integration and prepare a new round against current targets. The accepted task content must be unchanged.',
+      '--apply <plan-hash>         Apply the exact verified plan locally. Dirty or moved targets block; completed repositories are recorded for retry.',
+      '--cleanup                   Preview cleanup after Git and shared Specs delivery; add --apply to remove eligible worktrees. Dirty or ignored local files retain the entire worktree.',
+    ],
+    output:
+      'Per-repository commits, integration checks and local merge receipts. Cleanup retains documents, evidence and branches; no remote push occurs.',
+  },
   show: {
     usage: 'comet native show <change-name>',
     purpose: 'Read formal artifacts and portable state for one Native change.',
@@ -182,9 +200,10 @@ const HELP: Readonly<Record<string, NativeHelpEntry>> = Object.freeze({
     ],
   },
   select: {
-    usage: 'comet native select <change-name> [--rebind]',
+    usage: 'comet native select <change-name> [--rebind | --session <actual-session>]',
     options: [
       '--rebind  Explicitly bind the same stopped SDK Run to the current Git branch; preserve work and approvals, and reject unresolved executions.',
+      '--session <actual-session>  Explicitly switch this session to the selected multi-repository task; other sessions keep their bindings.',
     ],
     purpose: 'Select one Native change after validating its workspace binding.',
     output: 'The selected change record.',

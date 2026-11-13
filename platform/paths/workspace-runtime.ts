@@ -98,14 +98,27 @@ function canonicalParent(target: string): string {
 // 仅共享当前只读请求中同一显式目标的父目录解析；数据根自身仍由调用方校验。
 const cachedCanonicalParent = memoizedHookReadSync('workspaceRuntimeParent', canonicalParent);
 
-/** 纯路径解析，不创建目录；COMET_DATA_DIR 替代整个用户级 .comet 数据根。 */
-export function resolveWorkspaceRuntimeLocation(projectRoot: string): WorkspaceRuntimeLocation {
-  const identity = resolveWorkspaceIdentity(projectRoot);
+export function resolveCometDataRoot(): string {
   const configured = process.env.COMET_DATA_DIR;
   if (configured !== undefined && (!configured.trim() || !path.isAbsolute(configured)))
     throw new Error('COMET_DATA_DIR 必须是非空绝对路径');
-  const dataRoot = cachedCanonicalParent(configured ?? path.join(os.homedir(), '.comet'));
-  const relativeData = path.relative(identity.projectRoot, dataRoot);
+  return cachedCanonicalParent(configured ?? path.join(os.homedir(), '.comet'));
+}
+
+/** 纯路径解析，不创建目录；COMET_DATA_DIR 替代整个用户级 .comet 数据根。 */
+export function resolveWorkspaceRuntimeLocation(projectRoot: string): WorkspaceRuntimeLocation {
+  return resolveWorkspaceRuntimeLocationFromIdentity(resolveWorkspaceIdentity(projectRoot));
+}
+
+/** 已登记的身份可用于定位 Runtime，无需重新访问原工作区。 */
+export function resolveWorkspaceRuntimeLocationFromIdentity({
+  projectRoot,
+  workspaceId,
+}: Pick<WorkspaceRuntimeLocation, 'projectRoot' | 'workspaceId'>): WorkspaceRuntimeLocation {
+  if (!path.isAbsolute(projectRoot) || !/^[a-f0-9]{64}$/u.test(workspaceId))
+    throw new Error(`工作区登记身份无效：${projectRoot}`);
+  const dataRoot = resolveCometDataRoot();
+  const relativeData = path.relative(projectRoot, dataRoot);
   if (
     relativeData === '' ||
     (!path.isAbsolute(relativeData) &&
@@ -113,9 +126,10 @@ export function resolveWorkspaceRuntimeLocation(projectRoot: string): WorkspaceR
       !relativeData.startsWith(`..${path.sep}`))
   )
     throw new Error('用户级 Runtime 数据根不能位于当前工作区内');
-  const workspaceRoot = path.join(dataRoot, 'workspaces', identity.workspaceId);
+  const workspaceRoot = path.join(dataRoot, 'workspaces', workspaceId);
   return {
-    ...identity,
+    projectRoot,
+    workspaceId,
     dataRoot,
     workspaceRoot,
     runtimeRoot: path.join(workspaceRoot, 'runtime'),

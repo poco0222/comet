@@ -12,6 +12,10 @@ import {
   type NativeShapeSemanticSnapshot,
 } from './native-shape-semantics.js';
 import { nativeShapeReviewAnchorMatches } from './native-shape-review-evidence.js';
+import {
+  readNativeWorkspaceGroup,
+  assertNativeWorkspaceGroupCurrent,
+} from './native-workspace-group.js';
 import { createHash, randomUUID } from 'node:crypto';
 import {
   nativeLegacyArchiveGitStatus,
@@ -59,6 +63,15 @@ import {
   isChangeWalkthroughPath,
 } from '../workflow-contract/neutral-document-path.js';
 import { readProjectConfig } from './native-config.js';
+import { compileNativeSnapshotPattern } from './native-snapshot.js';
+import { isNativeCodeGraphCachePath } from './native-sensitive-paths.js';
+import {
+  readWorkflowProjectConfigIdentity,
+  readWorkflowProjectConfigSnapshot,
+  WORKFLOW_PROJECT_CONFIG_PATH,
+  workflowProjectConfigIdentityEquals,
+} from '../workflow-contract/project-config-reader.js';
+import { workflowNativeCustomSnapshotExcludes } from '../workflow-contract/project-config.js';
 import { nativeEditReviewScope } from './native-edit-review.js';
 import {
   inspectProcessLiveness,
@@ -416,6 +429,7 @@ export interface NativeRawInputSnapshot {
   complete: boolean;
   diagnostics: string[];
   contentHash: string;
+  exclusionHash?: string;
   outputs?: string[];
   contextHash: string;
   git: { head: string; branch: string; status: string; index: string } | null;
@@ -429,16 +443,121 @@ export interface NativeRawInputSnapshot {
   }>;
 }
 
-/** 一次观察只读取原始字节。Git 身份另存，不进入实现内容摘要。 */
-export async function nativeRawInputSnapshot(options: {
+interface NativeRawInputOptions {
   projectRoot: string;
+  exclusionScope?: { projectRoot: string; relativeRoot?: string };
   managedArtifactRoot?: string;
   excludedPaths?: readonly string[];
+  includedPaths?: readonly string[];
   legacyArchiveOverlay?: NativeLegacyArchiveOverlay;
   previous?: NativeRawInputSnapshot;
   outputs?: string[];
-}): Promise<NativeRawInputSnapshot> {
+}
+
+export function nativeRawContentHash({
+  projectRoot,
+  files,
+  outputs,
+  exclusionHash,
+}: Pick<NativeRawInputSnapshot, 'projectRoot' | 'files' | 'outputs' | 'exclusionHash'>): string {
+  return canonicalHash('comet.native.raw-content.v1', {
+    projectRoot,
+    files: files.map(({ path, hash, mode }) => ({ path, hash, mode })),
+    ...(outputs?.length ? { outputs } : {}),
+    ...(exclusionHash ? { exclusionHash } : {}),
+  });
+}
+
+export async function readNativeInputExclusions(root: string) {
+  const { document, identity } = await readWorkflowProjectConfigSnapshot(root);
+  const patterns = workflowNativeCustomSnapshotExcludes(
+    document?.config?.native?.snapshot.exclude ?? [],
+  );
+  const matchers = patterns.map(compileNativeSnapshotPattern);
+  const matches = (ref: string): boolean => {
+    if (!matchers.length) return false;
+    for (let prefix = ref; prefix; prefix = prefix.slice(0, Math.max(0, prefix.lastIndexOf('/'))))
+      if (matchers.some((match) => match(prefix) || match(`${prefix}/`))) return true;
+    return false;
+  };
+  if (matches(WORKFLOW_PROJECT_CONFIG_PATH))
+    throw new Error('native.snapshot.exclude 不能排除用于决定输入范围的 .comet/config.yaml');
+  return {
+    identity,
+    hash: patterns.length ? canonicalHash('comet.native.input-exclusions.v1', patterns) : undefined,
+    matches,
+  };
+}
+
+type NativeInputExclusions = Awaited<ReturnType<typeof readNativeInputExclusions>>;
+
+/** git status 即使带排除 pathspec，也可能刷新并读取被排除的文件。 */
+async function readNativeScopedGitObservation(root: string, excluded: (ref: string) => boolean) {
+  const [branch, ignored] = await Promise.all([
+    runGitCommandAsync(root, ['branch', '--show-current']),
+    runGitCommandAsync(root, [
+      'ls-files',
+      '--others',
+      '--ignored',
+      '--exclude-standard',
+      '--directory',
+      '-z',
+    ]),
+  ]);
+  const ref = `refs/heads/${branch}`;
+  const head = branch
+    ? ((await runGitCommandAsync(root, ['for-each-ref', '--format=%(refname) %(objectname)', ref]))
+        .split('\n')
+        .find((entry) => entry.startsWith(`${ref} `))
+        ?.slice(ref.length + 1) ?? 'unborn')
+    : await runGitCommandAsync(root, ['rev-parse', '--verify', 'HEAD']);
+  return {
+    head,
+    branch,
+    status: ignored
+      .split('\0')
+      .filter((ref) => ref && !excluded(ref.replace(/\/$/u, '')))
+      .map((ref) => `!! ${ref}\0`)
+      .join(''),
+  };
+}
+
+/** 先固定输入范围，再读取字节；范围变化时不复用本次观察。 */
+export async function nativeRawInputSnapshot(
+  options: NativeRawInputOptions,
+): Promise<NativeRawInputSnapshot> {
   const root = await fs.realpath(options.projectRoot);
+  const exclusionRoot = options.exclusionScope?.projectRoot ?? root;
+  const relative = options.exclusionScope?.relativeRoot ?? '';
+  const policy = await readNativeInputExclusions(exclusionRoot);
+  const snapshot = await captureNativeRawInput(
+    options,
+    root,
+    policy,
+    relative ? `${relative}/` : '',
+  );
+  if (
+    !workflowProjectConfigIdentityEquals(
+      policy.identity,
+      await readWorkflowProjectConfigIdentity(exclusionRoot),
+    )
+  ) {
+    snapshot.complete = false;
+    snapshot.diagnostics.push('Native 项目配置在采集输入期间变化，须重新采集');
+  }
+  return snapshot;
+}
+
+async function captureNativeRawInput(
+  options: NativeRawInputOptions,
+  root: string,
+  policy: NativeInputExclusions,
+  policyPrefix: string,
+): Promise<NativeRawInputSnapshot> {
+  const workspaceGroup = await readNativeWorkspaceGroup(root);
+  const groupRepositories = new Map(
+    workspaceGroup?.plan.repositories.map((entry) => [entry.path, entry]) ?? [],
+  );
   const managedArtifactRoot = options.managedArtifactRoot
     ? await fs.realpath(options.managedArtifactRoot).catch((error: NodeJS.ErrnoException) => {
         if (error.code !== 'ENOENT') throw error;
@@ -453,14 +572,23 @@ export async function nativeRawInputSnapshot(options: {
   const outputs = options.outputs ?? options.previous?.outputs ?? [];
   const trackedPaths = new Set<string>();
   const outputExcluded = (ref: string) =>
+    !(options.includedPaths ?? []).includes(ref) &&
     outputs.some((output) => ref === output || ref.startsWith(`${output}/`)) &&
     ![...trackedPaths].some((tracked) => tracked === ref || tracked.startsWith(`${ref}/`));
   const excluded = (ref: string) =>
+    policy.matches(`${policyPrefix}${ref}`) ||
     outputExcluded(ref) ||
     runnerInputs.has(ref) ||
     isNativeOwnedInputPath(ref, root, managedArtifactRoot) ||
     (options.excludedPaths ?? []).some((owned) => ref === owned || ref.startsWith(`${owned}/`));
   const diagnostics: string[] = [];
+  for (const ref of [
+    ...(options.includedPaths ?? []),
+    ...groupRepositories.keys(),
+    ...(workspaceGroup?.plan.setup?.files.map((file) => file.path) ?? []),
+  ])
+    if (policy.matches(`${policyPrefix}${ref}`))
+      diagnostics.push(`Native 输入排除规则与已明确声明的输入冲突：${ref}`);
   const files: NativeRawInputSnapshot['files'] = [];
   let git: NativeRawInputSnapshot['git'] = null;
   let selection: string[] = [];
@@ -468,7 +596,9 @@ export async function nativeRawInputSnapshot(options: {
   let physical = false;
   const observeGit = async () => {
     const results = await Promise.allSettled([
-      readGitStatusObservationAsync(root, [], { allowUnborn: true, includeIgnored: true }),
+      policy.hash
+        ? readNativeScopedGitObservation(root, (ref) => policy.matches(`${policyPrefix}${ref}`))
+        : readGitStatusObservationAsync(root, [], { allowUnborn: true, includeIgnored: true }),
       runGitCommandAsync(root, [
         'ls-files',
         '--stage',
@@ -535,14 +665,20 @@ export async function nativeRawInputSnapshot(options: {
         root,
         [],
         managedArtifactRoot,
-        runnerInputs,
+        new Set([...runnerInputs, ...groupRepositories.keys()]),
         'paths',
+        (ref) => policy.matches(`${policyPrefix}${ref}`),
       );
       if (!snapshot.complete) diagnostics.push(snapshot.diagnostic ?? '物理输入读取不完整');
       selection = snapshot.files.map((file) => file.path);
     }
   }
+  selection.push(...(options.includedPaths ?? []));
   const links = parseGitlinksInIndex(index);
+  for (const [ref, entry] of groupRepositories) {
+    links.set(ref, entry.baseCommit);
+    selection.push(ref);
+  }
   const objectIds = (value: string) =>
     new Map(
       value.split('\0').flatMap((record) => {
@@ -552,6 +688,7 @@ export async function nativeRawInputSnapshot(options: {
     );
   const indexed = objectIds(index);
   const trusted = (observation: NonNullable<typeof before>) => {
+    if (policy.hash) return new Set<string>();
     const dirty = new Set(parseGitStatusPaths(observation.status));
     return new Set(
       observation.flags
@@ -596,6 +733,8 @@ export async function nativeRawInputSnapshot(options: {
     ignoredDirectoryEntries: (ref) => (entry) => {
       const target = ref === '.' || ref === '' ? entry.name : `${ref}/${entry.name}`;
       return (
+        policy.matches(`${policyPrefix}${target}`) ||
+        isNativeOwnedInputPath(target, root, managedArtifactRoot) ||
         outputExcluded(target) ||
         (/(?:^|\/)\.next(?:\/dev)?$/u.test(ref) && isNativeNextVolatileInputPath(target))
       );
@@ -619,6 +758,7 @@ export async function nativeRawInputSnapshot(options: {
         `${index}\0${before.untracked}`,
         ignoredEntries,
         (ref) => readSession.observeDirectory(ref),
+        excluded,
       );
       const visited = new Set<string>();
       const selected = new Set(selection);
@@ -661,7 +801,7 @@ export async function nativeRawInputSnapshot(options: {
     }
   }
   const observed = await mapWithConcurrency(
-    selection.filter((ref) => !excluded(ref)).sort(),
+    [...new Set(selection)].filter((ref) => !excluded(ref)).sort(),
     16,
     async (ref) => {
       try {
@@ -691,10 +831,32 @@ export async function nativeRawInputSnapshot(options: {
                   .map((file) => ({ ...file, path: file.path.slice(prefix.length) })),
               }
             : undefined;
-          const nested = await nativeRawInputSnapshot({
-            projectRoot: childRoot,
-            previous: childPrevious,
-          });
+          const nested = await captureNativeRawInput(
+            {
+              projectRoot: childRoot,
+              managedArtifactRoot,
+              previous: childPrevious,
+              ...(groupRepositories.has(ref)
+                ? {
+                    outputs: outputs
+                      .filter((output) => output.startsWith(prefix))
+                      .map((output) => output.slice(prefix.length)),
+                    excludedPaths: (options.excludedPaths ?? [])
+                      .filter((excluded) => excluded.startsWith(prefix))
+                      .map((excluded) => excluded.slice(prefix.length)),
+                    includedPaths: [
+                      ...(options.includedPaths ?? []),
+                      ...(workspaceGroup?.plan.setup?.files.map((file) => file.path) ?? []),
+                    ]
+                      .filter((included) => included.startsWith(prefix))
+                      .map((included) => included.slice(prefix.length)),
+                  }
+                : {}),
+            },
+            childRoot,
+            policy,
+            `${policyPrefix}${prefix}`,
+          );
           if (!nested.complete) throw new Error(nested.diagnostics.join('；'));
           nestedFiles.push(
             ...nested.files.map((file) => ({ ...file, path: `${prefix}${file.path}` })),
@@ -713,7 +875,13 @@ export async function nativeRawInputSnapshot(options: {
           );
           return {
             path: ref,
-            hash: digestNativeCheckInput('comet.native.raw-gitlink.v1'),
+            hash:
+              workspaceGroup && groupRepositories.has(ref)
+                ? canonicalHash('comet.native.raw-workspace-repository.v1', {
+                    planHash: workspaceGroup.plan.hash,
+                    member: workspaceGroup.repositories.find((member) => member.path === ref),
+                  })
+                : digestNativeCheckInput('comet.native.raw-gitlink.v1'),
             mode: '160000',
           };
         }
@@ -745,7 +913,12 @@ export async function nativeRawInputSnapshot(options: {
           ...(generated.has(ref) ? { generated: true as const } : {}),
         };
       } catch (error) {
-        if ((error as NodeJS.ErrnoException).code === 'ENOENT' && !physical) return null;
+        if (
+          (error as NodeJS.ErrnoException).code === 'ENOENT' &&
+          !physical &&
+          !(options.includedPaths ?? []).includes(ref)
+        )
+          return null;
         diagnostics.push(`${ref}：${String(error)}`);
         return null;
       }
@@ -881,16 +1054,25 @@ export async function nativeRawInputSnapshot(options: {
   } catch (error) {
     diagnostics.push(`原始输入目录观察不完整：${String(error)}`);
   }
+  if (workspaceGroup) {
+    try {
+      await assertNativeWorkspaceGroupCurrent(workspaceGroup);
+    } catch (error) {
+      diagnostics.push(`Native workspace group changed during input capture: ${String(error)}`);
+    }
+  }
   return {
     schema: 'comet.native.raw-input.v1',
     projectRoot: root,
     files,
     complete: diagnostics.length === 0,
     diagnostics,
-    contentHash: canonicalHash('comet.native.raw-content.v1', {
+    ...(policy.hash ? { exclusionHash: policy.hash } : {}),
+    contentHash: nativeRawContentHash({
       projectRoot: root,
-      files: files.map(({ path, hash, mode }) => ({ path, hash, mode })),
-      ...(outputs.length ? { outputs } : {}),
+      files,
+      outputs,
+      exclusionHash: policy.hash,
     }),
     ...(outputs.length ? { outputs } : {}),
     contextHash: canonicalHash('comet.native.raw-context.v1', {
@@ -992,7 +1174,7 @@ export async function nativeRawCandidateHash(
   const files: NativeRawInputSnapshot['files'] = [];
   for (const file of snapshot.files) {
     // 生成输入仍绑定完整检查收据，生成物变化不替换 Builder 的源码候选。
-    if (file.generated) continue;
+    if (file.generated || isNativeCodeGraphCachePath(file.path)) continue;
     // 正式契约由 Shape 的批准绑定单独核对，不作为实现改动再次处理。
     if (formalPaths.includes(file.path)) continue;
     const reviewed = await approvedEditHash(scope, file.path, file.hash, reviews, file.mode);
@@ -1010,7 +1192,7 @@ export async function nativeRawCandidateHash(
     ),
   );
   for (const [ref, edit] of deleted) {
-    if (present.has(ref) || formalPaths.includes(ref)) continue;
+    if (present.has(ref) || formalPaths.includes(ref) || isNativeCodeGraphCachePath(ref)) continue;
     const reviewed = await approvedEditHash(scope, ref, 'missing', reviews);
     if (reviewed && reviewed.beforeHash !== null)
       files.push({
@@ -1023,6 +1205,7 @@ export async function nativeRawCandidateHash(
   return canonicalHash('comet.native.raw-candidate.v1', {
     projectRoot: snapshot.projectRoot,
     files: files.map(({ path, hash, mode }) => ({ path, hash, mode })),
+    ...(snapshot.exclusionHash ? { exclusionHash: snapshot.exclusionHash } : {}),
   });
 }
 
@@ -1314,6 +1497,8 @@ async function portableRawCheckApplicable(
   if (
     !before.complete ||
     !after.complete ||
+    before.exclusionHash !== current.exclusionHash ||
+    after.exclusionHash !== current.exclusionHash ||
     before.contextHash !== current.contextHash ||
     after.contextHash !== current.contextHash ||
     after.projectRoot !== current.projectRoot
@@ -1440,6 +1625,10 @@ const NATIVE_RUNTIME_MANAGED_FILES = new Set([
   'verification.md',
 ]);
 
+// 检查点原子写入时，临时文件与正式文件位于同一 change 目录。
+const NATIVE_CHECKPOINT_TEMP_FILE =
+  /^\.comet-state\.yaml\.[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}\.tmp$/u;
+
 function nativeOwnedInputExclusions(projectRoot: string, managedArtifactRoot?: string): string[] {
   const exclusions = [
     ...NATIVE_RUNTIME_INPUT_EXCLUSIONS,
@@ -1486,19 +1675,17 @@ function isNativeOwnedInputPath(
     return true;
   if (
     NATIVE_WORKTREE_INPUT_DIRECTORIES.has(normalized.split('/')[0]) ||
+    isNativeCodeGraphCachePath(normalized) ||
     normalized === '.comet/current-change.json' ||
     normalized === '.comet/runtime' ||
     normalized.startsWith('.comet/runtime/')
   ) {
     return true;
   }
-  if (
-    !projectRoot ||
-    !managedArtifactRoot ||
-    !NATIVE_RUNTIME_MANAGED_FILES.has(path.basename(normalized))
-  ) {
-    return false;
-  }
+  if (!projectRoot || !managedArtifactRoot) return false;
+  const basename = path.posix.basename(normalized);
+  const checkpointTemporary = NATIVE_CHECKPOINT_TEMP_FILE.test(basename);
+  if (!checkpointTemporary && !NATIVE_RUNTIME_MANAGED_FILES.has(basename)) return false;
   const target = path.resolve(projectRoot, ...normalized.split('/'));
   const relativeToArtifact = path.relative(path.resolve(managedArtifactRoot), target);
   if (
@@ -1508,10 +1695,12 @@ function isNativeOwnedInputPath(
   ) {
     return false;
   }
-  const [, directory] = relativeToArtifact.split(path.sep);
+  const segments = relativeToArtifact.split(path.sep);
+  const [comet, directory] = segments;
   return (
-    relativeToArtifact.startsWith(`comet${path.sep}`) &&
-    (directory === 'changes' || directory === 'archive')
+    comet === 'comet' &&
+    (directory === 'changes' || directory === 'archive') &&
+    (!checkpointTemporary || segments.length === 4)
   );
 }
 
@@ -1559,10 +1748,12 @@ async function nativeGeneratedInputRoots(
   stagedIndex: string,
   ignoredEntries: string,
   observeDirectory?: (ref: string) => Promise<unknown>,
+  excluded?: (ref: string) => boolean,
 ): Promise<{ cwdRefs: string[]; discovery: Map<string, string> }> {
   const roots = new Set(['.', ...plans.map(({ cwdRef }) => cwdRef)]);
   const discovery = new Map<string, string>();
   const visit = async (relative: string): Promise<void> => {
+    if (excluded?.(relative)) return;
     const parts = relative.split('/').filter(Boolean);
     if (
       parts.some(
@@ -1852,6 +2043,7 @@ async function nativePhysicalCheckInputSnapshot(
   managedArtifactRoot?: string,
   runnerInputs: ReadonlySet<string> = new Set(),
   kind: 'check' | 'candidate' | 'paths' = 'check',
+  excluded: (ref: string) => boolean = () => false,
 ): Promise<NativeIgnoredInputSnapshot> {
   // 根配置和 lockfile 也可影响子目录内的检查。
   const cwdRefs = ['.'];
@@ -1881,7 +2073,7 @@ async function nativePhysicalCheckInputSnapshot(
     entries.sort((left, right) => left.name.localeCompare(right.name, 'en'));
     for (const entry of entries) {
       const relative = relativeDirectory ? `${relativeDirectory}/${entry.name}` : entry.name;
-      if (runnerInputs.has(relative)) continue;
+      if (runnerInputs.has(relative) || excluded(relative)) continue;
       if (isNativeOwnedInputPath(relative, projectRoot, managedArtifactRoot)) continue;
       const target = path.join(directory, entry.name);
       if (kind === 'candidate' && isGeneratedDirectory(entry.name)) continue;

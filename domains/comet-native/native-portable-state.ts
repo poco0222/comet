@@ -245,7 +245,11 @@ function parseSpecChange(value: unknown, index: number): NativePortableSpecChang
 function parseWorkspace(value: unknown): NativePortableWorkspace {
   const label = 'Native workspace';
   const root = record(value, label);
-  rejectUnknown(root, new Set(['isolation', 'change_branch', 'target_branch', 'finish']), label);
+  rejectUnknown(
+    root,
+    new Set(['isolation', 'change_branch', 'target_branch', 'finish', 'group_hash']),
+    label,
+  );
   const isolation = enumValue(
     root.isolation,
     ['current', 'branch', 'worktree'] as const,
@@ -270,7 +274,26 @@ function parseWorkspace(value: unknown): NativePortableWorkspace {
   if (isolation !== 'current' && (change_branch === null || target_branch === null)) {
     throw new Error('Native isolated workspace requires change_branch and target_branch');
   }
-  return { isolation, change_branch, target_branch, finish };
+  if (
+    root.group_hash !== undefined &&
+    (typeof root.group_hash !== 'string' ||
+      !/^[a-f0-9]{64}$/u.test(root.group_hash) ||
+      isolation !== 'current' ||
+      change_branch !== null ||
+      target_branch !== null ||
+      finish !== null)
+  ) {
+    throw new Error(
+      'Native workspace group requires its plan hash and a non-Git task root; Git delivery is separate',
+    );
+  }
+  return {
+    isolation,
+    change_branch,
+    target_branch,
+    finish,
+    ...(root.group_hash === undefined ? {} : { group_hash: root.group_hash as string }),
+  };
 }
 
 function parseLoop(value: unknown): NativePortableLoopState {

@@ -46,6 +46,8 @@ import {
   nativeSdkCheckRefreshCommandValidator,
   nativeSdkCheckRefreshInput,
   rememberNativeSdkBuilderInputs,
+  inspectNativeSdkInputExclusionDrift,
+  NATIVE_SDK_INPUT_EXCLUSION_DRIFT,
 } from './native-sdk-checks.js';
 import {
   nativeSdkDisassociateCommandValidator,
@@ -282,6 +284,10 @@ export async function collectNativeSdkShapeProposal(options: {
     acceptanceIds: acceptance.map(({ id }) => id),
     validation: nativeChildrenAcceptanceValidation({ ...state, acceptance }),
   });
+  if (children && state.workspace.group_hash)
+    throw new Error(
+      'Native multi-repository tasks do not support Supervisor children; keep this task in the ordinary SDK workflow',
+    );
   if ((await readNativeSupervisorShapeIntent(changeDir)) && !children) {
     throw new Error('Native Supervisor Shape requires children.yaml before confirmation');
   }
@@ -1049,6 +1055,18 @@ const verifierValidator: RuntimeValidator = {
       return { accepted: false, reason: 'Native Verifier result lacks its project binding' };
     }
     try {
+      if (
+        (outcome.output as { reason?: unknown } | null)?.reason === NATIVE_SDK_INPUT_EXCLUSION_DRIFT
+      ) {
+        const drift = await inspectNativeSdkInputExclusionDrift(run, action, context.projectRoot);
+        return {
+          accepted:
+            outcome.status === 'succeeded' &&
+            drift !== null &&
+            hashRuntimeValue(outcome.output) === hashRuntimeValue(drift),
+          reason: 'Native 输入排除范围或原 Verifier 领取已变化，请读取当前 status 后再继续。',
+        };
+      }
       if (outcome.status === 'failed') {
         verifierExecutionFailureState(run, action, outcome);
         return { accepted: true };
@@ -2505,6 +2523,22 @@ export function defineNativeWorkflowApplication(
         if (event.kind === 'action-outcome' && event.stepId === 'verify.verifier') {
           const action = run.actions.find((candidate) => candidate.id === event.outcome.actionId);
           if (!action) throw new Error('Native Verifier Action is missing from its Run');
+          const result = event.outcome.output as { reason?: unknown; summary: string } | null;
+          if (result?.reason === NATIVE_SDK_INPUT_EXCLUSION_DRIFT) {
+            const returned = returnNativeCandidateToBuild({
+              state: { ...state, loop: { ...state.loop, previous_unresolved_ids: [] } },
+              reason: result.summary,
+            });
+            return {
+              state: returned as unknown as RuntimeValue,
+              next: [
+                {
+                  stepId: 'build.builder',
+                  input: { repairContext: nativeBuilderRepairContext(returned, run) },
+                },
+              ],
+            };
+          }
           if (event.outcome.status === 'failed') {
             const failed = verifierExecutionFailureState(run, action, event.outcome);
             if (failed.status === 'blocked') {

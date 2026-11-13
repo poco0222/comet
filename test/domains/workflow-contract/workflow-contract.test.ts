@@ -451,11 +451,14 @@ describe('workflow contract normalization', () => {
     }
   });
 
-  it('keeps legacy snapshot parsing internal while omitting it from managed writes', () => {
+  it('keeps explicit input exclusions but omits legacy inclusion and budget fields', () => {
     const config = defaultWorkflowProjectConfig('docs');
+    expect(workflowProjectConfigManagedValue(config)).not.toHaveProperty('native.snapshot');
     config.native.snapshot.exclude = ['legacy/generated/**'];
 
-    expect(workflowProjectConfigManagedValue(config)).not.toHaveProperty('native.snapshot');
+    expect(workflowProjectConfigManagedValue(config)).toHaveProperty('native.snapshot', {
+      exclude: ['legacy/generated/**'],
+    });
 
     const merged = mergeWorkflowProjectConfigDocument(
       {
@@ -466,6 +469,7 @@ describe('workflow contract normalization', () => {
           artifact_root: 'legacy-root',
           snapshot: {
             include: ['**/*'],
+            max_files: 500,
             snapshot_extension: 'remove-with-retired-block',
           },
           finish: {
@@ -477,7 +481,7 @@ describe('workflow contract normalization', () => {
       },
       config,
     );
-    expect(merged).not.toHaveProperty('native.snapshot');
+    expect(merged).toHaveProperty('native.snapshot', { exclude: ['legacy/generated/**'] });
     expect(merged).not.toHaveProperty('native.finish.pull_request');
     expect(merged).toHaveProperty('native.finish.future_provider', { enabled: true });
     expect(merged).toHaveProperty('native.custom_extension', 'keep');

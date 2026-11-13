@@ -1,4 +1,5 @@
 import path from 'node:path';
+import { readNativeWorkspaceGroup } from './native-workspace-group.js';
 import { readFileRaceSafe } from '../../platform/fs/race-safe-read.js';
 import { stripUtf8Bom } from '../../platform/fs/strip-bom.js';
 import { reportCometRuntimeProgress } from '../../platform/process/runtime-metrics.js';
@@ -217,12 +218,29 @@ async function projectTaskResult(
             : '按已批准的 brief、Spec 和全部验收项完成实现；需要受管检查时在结果中提交 request-checks，收到检查结果后继续 Build。',
       }
     : undefined;
+  const workspaceGroup = state.workspace.group_hash
+    ? await readNativeWorkspaceGroup(options.projectRoot)
+    : null;
   const data = {
     schema: 'comet.native.task-result.v1',
     change: options.name,
     phase: state.phase,
     status: run.status === 'completed' ? 'completed' : state.status,
-    workspace: { projectRoot: options.projectRoot },
+    workspace: {
+      projectRoot: options.projectRoot,
+      ...(workspaceGroup
+        ? {
+            coordinatorRoot: workspaceGroup.plan.coordinatorRoot,
+            planHash: workspaceGroup.plan.hash,
+            repositories: workspaceGroup.plan.repositories.map((entry) => ({
+              path: entry.path,
+              cwd: entry.worktreeRoot,
+              changeBranch: entry.changeBranch,
+              targetBranch: entry.targetBranch,
+            })),
+          }
+        : {}),
+    },
     result: {
       summary: verified?.summary ?? state.verification?.summary.text ?? summary,
       ...(state.verification
@@ -355,7 +373,7 @@ export async function advanceNativeSdkTask(options: NativeTaskOptions): Promise<
             },
           }
         : original;
-    const outcomeId =
+    const resultId =
       'native-result-' +
       hashRuntimeValue({
         actionId: action.id,
@@ -364,6 +382,10 @@ export async function advanceNativeSdkTask(options: NativeTaskOptions): Promise<
         claimToken: action.claim.token,
         result,
       });
+    // 同一结果 ID 会回放历史拒绝，重试需要重新校验并保留原收据。
+    const rejectedIds = new Set(action.rejectedOutcomes?.map(({ outcome }) => outcome.outcomeId));
+    let outcomeId = resultId;
+    for (let retry = 1; rejectedIds.has(outcomeId); retry++) outcomeId = `${resultId}:${retry}`;
     repeated = action.outcome?.outcomeId === outcomeId;
     await registerNativeSdkRequestInput({
       projectRoot: options.projectRoot,

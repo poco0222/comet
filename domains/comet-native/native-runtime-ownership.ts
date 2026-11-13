@@ -4,6 +4,10 @@ import {
 } from './native-sdk-archive.js';
 import { nativeSdkReportRevalidationValidator } from './native-sdk-report.js';
 import path from 'node:path';
+import {
+  readNativeWorkspaceGroup,
+  readNativeWorkspaceGroupPlan,
+} from './native-workspace-group.js';
 import { memoizedHookReadSync } from '../../platform/process/hook-read-cache.js';
 import { promises as fs } from 'node:fs';
 import { parseNativeStateDocument } from './native-state-document.js';
@@ -617,6 +621,11 @@ export async function inspectNativeSdkRun(
   }
   const state = parseNativePortableState(run.state);
   if (state.name !== name) throw new Error(`Native SDK Run ${name} has a different state name`);
+  if (state.workspace.group_hash) {
+    const group = await readNativeWorkspaceGroup(projectRoot);
+    if (group?.plan.hash !== state.workspace.group_hash || group.plan.name !== name)
+      throw new Error('Native SDK Run does not match its workspace group');
+  }
   return { run, state, artifactRootRef: run.input.artifactRootRef, application };
 }
 
@@ -626,6 +635,19 @@ export async function findNativeSdkWorkspace(
   options: { readOnly?: boolean } = {},
 ): Promise<({ projectRoot: string } & Awaited<ReturnType<typeof inspectNativeSdkRun>>) | null> {
   const requestedRoot = path.resolve(projectRoot);
+  const groupPlan = await readNativeWorkspaceGroupPlan(requestedRoot, name);
+  if (groupPlan) {
+    const group = await readNativeWorkspaceGroup(groupPlan.projectRoot);
+    if (!group || group.plan.hash !== groupPlan.hash)
+      throw new Error(
+        'Native task workspace creation is incomplete; retry the original new command',
+      );
+    if (!(await readSdkChangeOwner(groupPlan.projectRoot, 'native', name, options))) return null;
+    return {
+      projectRoot: groupPlan.projectRoot,
+      ...(await inspectNativeSdkRun(groupPlan.projectRoot, name, options)),
+    };
+  }
   if (await readSdkChangeOwner(requestedRoot, 'native', name, options)) {
     return {
       projectRoot: requestedRoot,

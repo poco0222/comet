@@ -11707,6 +11707,26 @@
           ]
         }
       ]
+    },
+    {
+      "id": "ci-classic-archive-repair-test-deadline",
+      "sources": ["https://github.com/poco0222/comet/actions/runs/43364776631/job/131686500284"],
+      "behavior": "Complete the full Classic SDK Archive input repair and delivery tests through both the source CLI and the generated bundle within a dedicated test deadline.",
+      "coverageLevel": "public-cli",
+      "reproduction": "On 9fe250e, the macOS SDK job failed both entry cases at the 120-second Vitest deadline. Both passed in under 25 seconds on local macOS without injected delay. In isolated copies with 3.6 seconds added after every CLI invocation, both original cases timed out at 120 seconds and both passed with the new deadline at about 130 and 135 seconds.",
+      "expected": "Both cases perform the failed Archive, approve the revised inputs, and complete local delivery on the original Run. Each case has a 180-second test deadline, matching its existing Windows allowance.",
+      "forbidden": "Skip either entry, omit approval or delivery assertions, change production command timeouts, or extend the whole test suite or CI job deadline.",
+      "rootCause": "Each case accumulates 29 serial CLI calls across the initial failure and successful retry. macOS inherited the generic 120-second test deadline, although the same case already had a longer Windows deadline.",
+      "tests": [
+        {
+          "file": "test/domains/comet-classic/classic-sdk-verify-rounds.test.ts",
+          "namePattern": "^Classic SDK Archive input repair repairs a full Archive without effects and delivers the same Run through (source|generated)$",
+          "requiredNames": [
+            "Classic SDK Archive input repair repairs a full Archive without effects and delivers the same Run through source",
+            "Classic SDK Archive input repair repairs a full Archive without effects and delivers the same Run through generated"
+          ]
+        }
+      ]
     }
   ]
 }

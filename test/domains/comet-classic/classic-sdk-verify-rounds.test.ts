@@ -151,7 +151,8 @@ describe('Classic SDK Archive input repair', () => {
       expect(final.status).toBe('completed');
       expect(await f.openSpec.invocations()).toHaveLength(2);
     },
-    fullLifecycleTimeout,
+    // 失败归档和修复后交付需两轮完整流程，macOS CI 的累计耗时超过默认 120 秒。
+    180_000,
   );
   it('requires fresh verification and Archive approval after rebinding to a divergent branch', async () => {
     const f = await fixture('tweak', true, false, 'source', '');

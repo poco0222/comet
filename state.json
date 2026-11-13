@@ -5,8 +5,9 @@
   "controller_sha": "e1e5a73b98e68b67c3da45257567e4e334c0aa2b",
   "candidate": "4a643f6defd7bc8e8030d1e7c0fef974ae21419b",
   "candidate_branch": "automation/upstream-468e93d1dbc7-356114427f28",
-  "status": "checking",
+  "status": "stale",
   "cloud": "pending",
   "macos": "pending",
-  "queued_at": "2026-11-12T23:43:01.422427+00:00"
+  "queued_at": "2026-11-12T23:43:01.422427+00:00",
+  "reason": "功能分支已前进，旧检查不能用于新的合并。"
 }

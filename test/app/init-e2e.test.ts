@@ -843,7 +843,7 @@ describe('comet init E2E', () => {
     });
   });
 
-  it('repairs missing Native defaults and removes legacy snapshot config while initializing Both', async () => {
+  it('repairs missing Native defaults and preserves only custom snapshot exclusions while initializing Both', async () => {
     mockExternalSuccess();
     await fs.mkdir(path.join(tmpDir, '.claude'), { recursive: true });
     await fs.mkdir(path.join(tmpDir, 'openspec', 'changes', 'archive'), { recursive: true });
@@ -887,7 +887,7 @@ describe('comet init E2E', () => {
       classic?: { artifact_layout?: string };
     };
     expect(config.native?.artifact_root).toBe('docs');
-    expect(config.native?.snapshot).toBeUndefined();
+    expect(config.native?.snapshot).toEqual({ exclude: ['custom/init-generated/**'] });
     expect(config.classic?.artifact_layout).toBe('legacy');
     await expect(fs.stat(path.join(tmpDir, 'openspec', 'config.yaml'))).resolves.toBeDefined();
     await expect(fs.access(path.join(tmpDir, 'docs', 'openspec'))).rejects.toMatchObject({
@@ -1971,7 +1971,7 @@ describe('comet init E2E', () => {
     await expect(fs.access(path.join(tmpDir, '.comet', 'config.yaml'))).rejects.toThrow();
   });
 
-  it('preserves an existing global Ambient Resume preference during re-initialization', async () => {
+  it('preserves global Ambient Resume and custom snapshot exclusions during re-initialization', async () => {
     mockExternalSuccess();
     const fakeHome = path.join(tmpDir, 'fake-home-existing-global');
     await fs.mkdir(path.join(fakeHome, '.comet'), { recursive: true });
@@ -2015,7 +2015,7 @@ describe('comet init E2E', () => {
     const globalConfig = parse(
       await fs.readFile(path.join(fakeHome, '.comet', 'config.yaml'), 'utf8'),
     ) as { native: { snapshot?: unknown } };
-    expect(globalConfig.native.snapshot).toBeUndefined();
+    expect(globalConfig.native.snapshot).toEqual({ exclude: ['custom/global-generated/**'] });
   });
 
   it('migrates a project-schema Home config during global initialization', async () => {

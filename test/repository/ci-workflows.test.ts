@@ -319,11 +319,14 @@ describe('CI workflows', () => {
   it('pins third-party actions to immutable commit SHAs', async () => {
     const names = await fs.readdir('.github/workflows');
     for (const name of names.filter((entry) => entry.endsWith('.yml'))) {
-      const workflow = await readWorkflow(name);
-      for (const match of workflow.matchAll(/uses:\s+([^\s#]+)/g)) {
-        const reference = match[1];
-        if (reference.startsWith('docker://') || reference.startsWith('./')) continue;
-        expect(reference, `${name}: ${reference}`).toMatch(/@[0-9a-f]{40}$/);
+      const workflow = parse(await readWorkflow(name)) as {
+        jobs: Record<string, { uses?: string; steps?: Array<{ uses?: string }> }>;
+      };
+      for (const job of Object.values(workflow.jobs)) {
+        for (const { uses } of [job, ...(job.steps ?? [])]) {
+          if (uses === undefined || uses.startsWith('docker://') || uses.startsWith('./')) continue;
+          expect(uses, `${name}: ${uses}`).toMatch(/@[0-9a-f]{40}$/);
+        }
       }
     }
   });

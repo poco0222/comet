@@ -112,11 +112,18 @@ describe('loadBundle', () => {
       source: manifest.replace('    visibility: internal\n', ''),
       field: 'skills[2].visibility',
     },
+    {
+      name: 'a non-text rule match',
+      source: manifest.replace(
+        '      mode: always\n',
+        '      mode: always\n      match: [false]\n',
+      ),
+      field: 'resources.rules[0].match[0]',
+    },
   ])('rejects $name with an actionable field path', async ({ source, field }) => {
-    await fs.writeFile(path.join(root, 'bundle.yaml'), source);
+    const manifestPath = path.join(root, 'bundle.yaml');
+    await fs.writeFile(manifestPath, source);
 
-    await expect(loadBundle(root)).rejects.toThrow(
-      new RegExp(`bundle[\\\\/]?\\.yaml.*${field.replace('[', '\\[').replace(']', '\\]')}`),
-    );
+    await expect(loadBundle(root)).rejects.toThrow(`${manifestPath}: ${field} `);
   });
 });

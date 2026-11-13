@@ -11648,6 +11648,26 @@
           ]
         }
       ]
+    },
+    {
+      "id": "native-verify-ignore-checkpoint-temporary-file",
+      "sources": ["report:2026-11-13-sam-native-candidate-check-blocked"],
+      "behavior": "Run Native successor checks when a Comet checkpoint temporary file is present during input capture.",
+      "coverageLevel": "public-cli",
+      "reproduction": "In a temporary non-Git coordinator with child Git repositories, submit a successor Builder candidate and run native next. Hold a copy of the SDK checkpoint at its atomic temporary filename after the check is claimed. Installed 0.5.3 refuses to start the command and marks the check Action unknown.",
+      "expected": "The temporary checkpoint is excluded, the successor check executes once, and Verify continues with the original Run and Shape and preserved prior receipts.",
+      "forbidden": "Treat the temporary checkpoint as implementation drift, reuse the prior check as current evidence, or ignore a similarly named file in a project source directory.",
+      "rootCause": "Native input capture excluded the published comet-state.yaml but included the atomic writer's sibling temporary file in the candidate and in the directory stability check.",
+      "tests": [
+        {
+          "file": "test/domains/comet-native/native-sdk-blocked-recovery.test.ts",
+          "namePattern": "^blocked Verifier recovery command contract checks a successor when a (checkpoint|project input) file appears after the check is claimed$",
+          "requiredNames": [
+            "blocked Verifier recovery command contract checks a successor when a checkpoint file appears after the check is claimed",
+            "blocked Verifier recovery command contract checks a successor when a project input file appears after the check is claimed"
+          ]
+        }
+      ]
     }
   ]
 }

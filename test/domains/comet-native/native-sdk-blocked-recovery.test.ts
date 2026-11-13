@@ -938,6 +938,88 @@ describe('blocked Verifier recovery command contract', () => {
     ).toBe(true);
   });
 
+  it.each(['checkpoint', 'project input'] as const)(
+    'checks a successor when a %s file appears after the check is claimed',
+    async (kind) => {
+      const f = await blockedFixture({
+        version: '3',
+        repeatableChecks: true,
+        nonGitEnvironment: true,
+      });
+      const repair = (await alternatives(f)).find(({ name }) => name === 'revise-implementation')!;
+      expect((await executeAlternative(repair)).exitCode).toBe(0);
+      const build: WorkflowRun = await f.dispatch({ operation: 'inspect', runId: f.name });
+      await fs.writeFile(path.join(f.projectRoot, 'AGENTS.md'), 'Read the project index.\n');
+      const candidate: WorkflowRun = await f.record(
+        build.actions.find(({ status }) => status === 'pending')!,
+        f.run.outputs['build.builder'].value,
+        'successor-builder',
+      );
+      const check = candidate.actions.find(({ status }) => status === 'pending')!;
+      expect(check.stepId).toBe('verify.checks');
+
+      const changeDir = path.join(f.projectRoot, 'docs/comet/changes', f.name);
+      const checkpoint = path.join(changeDir, 'comet-state.yaml');
+      const file = path.join(
+        kind === 'checkpoint' ? changeDir : path.join(f.projectRoot, 'server'),
+        '.comet-state.yaml.712d0e91-642d-4a73-ac11-7ccf0b0cc5c8.tmp',
+      );
+      const preload = path.join(f.root, 'checkpoint-overlap.mjs');
+      // Keep a second checkpoint publication visible while the executor samples its input.
+      await fs.writeFile(
+        preload,
+        `import { promises as fs } from 'node:fs';
+const rename = fs.rename;
+fs.rename = async (from, to) => {
+  await rename(from, to);
+  if (to === ${JSON.stringify(checkpoint)}) {
+    fs.rename = rename;
+    await fs.copyFile(to, ${JSON.stringify(file)});
+  }
+};
+`,
+      );
+      const result = spawnSync(
+        process.execPath,
+        [
+          '--import',
+          pathToFileURL(preload).href,
+          path.resolve(process.env.COMET_TEST_PACKAGE_ROOT ?? '.', 'bin/comet.js'),
+          'native',
+          'next',
+          f.name,
+          '--json',
+        ],
+        { cwd: f.projectRoot, encoding: 'utf8', timeout: 30_000 },
+      );
+      if (result.error) throw result.error;
+      expect(await fs.readFile(file, 'utf8')).toContain('run_checkpoint:');
+      const run: WorkflowRun = await f.dispatch({ operation: 'inspect', runId: f.name });
+      const latest = run.actions.find(({ id }) => id === check.id)!;
+      const prior = f.run.actions.find(({ stepId }) => stepId === 'verify.checks')!;
+      expect(run.runId).toBe(f.run.runId);
+      expect(run.actions.find(({ id }) => id === prior.id)?.outcome).toEqual(prior.outcome);
+      expect(parseNativePortableState(run.state).shape_confirmation_hash).toBe(
+        parseNativePortableState(f.run.state).shape_confirmation_hash,
+      );
+      const runs = await fs.readFile(path.join(f.projectRoot, 'dist/check-count'), 'utf8');
+      if (kind === 'project input') {
+        expect(result.status).not.toBe(0);
+        expect(latest.status).toBe('unknown');
+        expect(latest.reason).toContain('Builder 交接后的候选实现内容已变化');
+        expect(runs).toBe('once\n');
+        return;
+      }
+      expect(result.status, result.stdout || result.stderr).toBe(0);
+      expect(latest).toMatchObject({
+        status: 'succeeded',
+        outcome: { output: { checks: [{ id: 'one-shot', status: 'passed' }] } },
+      });
+      expect(runs).toBe('once\nonce\n');
+      expect(run.actions.at(-1)).toMatchObject({ stepId: 'verify.verifier', status: 'pending' });
+    },
+  );
+
   it.each([false, true])(
     'accepts successful checks for unchanged UTF-8 source without rewriting bytes (BOM=%s)',
     async (bom) => {

@@ -734,7 +734,7 @@ async function captureNativeRawInput(
       const target = ref === '.' || ref === '' ? entry.name : `${ref}/${entry.name}`;
       return (
         policy.matches(`${policyPrefix}${target}`) ||
-        isNativeCodeGraphCachePath(target) ||
+        isNativeOwnedInputPath(target, root, managedArtifactRoot) ||
         outputExcluded(target) ||
         (/(?:^|\/)\.next(?:\/dev)?$/u.test(ref) && isNativeNextVolatileInputPath(target))
       );
@@ -1625,6 +1625,10 @@ const NATIVE_RUNTIME_MANAGED_FILES = new Set([
   'verification.md',
 ]);
 
+// 检查点原子写入时，临时文件与正式文件位于同一 change 目录。
+const NATIVE_CHECKPOINT_TEMP_FILE =
+  /^\.comet-state\.yaml\.[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}\.tmp$/u;
+
 function nativeOwnedInputExclusions(projectRoot: string, managedArtifactRoot?: string): string[] {
   const exclusions = [
     ...NATIVE_RUNTIME_INPUT_EXCLUSIONS,
@@ -1678,13 +1682,10 @@ function isNativeOwnedInputPath(
   ) {
     return true;
   }
-  if (
-    !projectRoot ||
-    !managedArtifactRoot ||
-    !NATIVE_RUNTIME_MANAGED_FILES.has(path.basename(normalized))
-  ) {
-    return false;
-  }
+  if (!projectRoot || !managedArtifactRoot) return false;
+  const basename = path.posix.basename(normalized);
+  const checkpointTemporary = NATIVE_CHECKPOINT_TEMP_FILE.test(basename);
+  if (!checkpointTemporary && !NATIVE_RUNTIME_MANAGED_FILES.has(basename)) return false;
   const target = path.resolve(projectRoot, ...normalized.split('/'));
   const relativeToArtifact = path.relative(path.resolve(managedArtifactRoot), target);
   if (
@@ -1694,10 +1695,12 @@ function isNativeOwnedInputPath(
   ) {
     return false;
   }
-  const [, directory] = relativeToArtifact.split(path.sep);
+  const segments = relativeToArtifact.split(path.sep);
+  const [comet, directory] = segments;
   return (
-    relativeToArtifact.startsWith(`comet${path.sep}`) &&
-    (directory === 'changes' || directory === 'archive')
+    comet === 'comet' &&
+    (directory === 'changes' || directory === 'archive') &&
+    (!checkpointTemporary || segments.length === 4)
   );
 }
 

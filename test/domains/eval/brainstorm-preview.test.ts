@@ -6,6 +6,7 @@ import path from 'node:path';
 import { createInterface } from 'node:readline';
 import { fileURLToPath } from 'node:url';
 import { runInNewContext } from 'node:vm';
+import { JSDOM } from 'jsdom';
 import { expect, it, vi } from 'vitest';
 
 const script = fileURLToPath(
@@ -60,10 +61,10 @@ it('serves a fixed bootstrap page and initializes only authorized preview sessio
 
     const setItem = vi.fn();
     const replace = vi.fn();
-    const bootstrap = /<script>([\s\S]*?)<\/script>/u.exec(html);
-    expect(bootstrap).not.toBeNull();
+    const scripts = JSDOM.fragment(html).querySelectorAll('script');
+    expect(scripts).toHaveLength(1);
     runInNewContext(
-      bootstrap![1],
+      scripts[0].textContent,
       { URLSearchParams, sessionStorage: { setItem }, location: { search: url.search, replace } },
       { timeout: 1000 },
     );

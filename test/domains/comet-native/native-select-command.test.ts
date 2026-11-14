@@ -52,17 +52,20 @@ describe('Native select command branches', () => {
     await seedChange(worktreeRoot);
     // SIMULATED inspection projection: this unit test checks forwarding, not a Build transition.
     const primaryConfig = await fs.readFile(path.join(projectRoot, '.comet/config.yaml'), 'utf8');
-    inspectDiscoveredNativeStatus.mockImplementation(async () => {
-      return {
-        schema: 'comet.native.status.v2',
-        name: 'demo',
-        phase: 'build',
-        status: 'active',
-        stateVersion: 7,
-        workspace: { projectRoot: worktreeRoot },
-        continuation: { schema: 'comet.native.continuation.v2', action: 'advance-children' },
-      };
-    });
+    inspectDiscoveredNativeStatus.mockImplementation(
+      async ({ projectRoot: requestedRoot, onSelectedRoot }) => {
+        onSelectedRoot(requestedRoot);
+        return {
+          schema: 'comet.native.status.v2',
+          name: 'demo',
+          phase: 'build',
+          status: 'active',
+          stateVersion: 7,
+          workspace: { projectRoot: worktreeRoot },
+          continuation: { schema: 'comet.native.continuation.v2', action: 'advance-children' },
+        };
+      },
+    );
 
     await expect(nativeSelectCommand(['demo'], projectRoot)).rejects.toThrow();
     expect(await readCometCurrentSelection(projectRoot)).toMatchObject({ status: 'missing' });
@@ -71,6 +74,7 @@ describe('Native select command branches', () => {
     expect(inspectDiscoveredNativeStatus).toHaveBeenCalledExactlyOnceWith({
       projectRoot: worktreeRoot,
       name: 'demo',
+      onSelectedRoot: expect.any(Function),
     });
     expect(result).toMatchObject({
       command: 'select',

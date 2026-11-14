@@ -11727,6 +11727,72 @@
           ]
         }
       ]
+    },
+    {
+      "id": "eval-preview-fixed-session-bootstrap",
+      "sources": ["https://github.com/poco0222/comet/security/code-scanning/4"],
+      "behavior": "Initialize an authorized Eval preview session without reflecting its URL key in the HTML response.",
+      "coverageLevel": "runtime",
+      "reproduction": "Start the standalone preview server on loopback with an ordinary fixture key containing URL punctuation. The npm 0.5.2 package and pre-fix checkout both return that key in the HTML. The same check passes against the patched checkout and the locally packed 0.5.3 tarball.",
+      "expected": "An authorized request gets fixed HTML whose script stores the decoded URL key and navigates to the preview. The authorized cookie works after navigation. An invalid key gets HTTP 403 without a session cookie.",
+      "forbidden": "Serialize the request key into the HTML response or grant a session to a request with an invalid key.",
+      "rootCause": "The preview server interpolated a JSON string containing the URL key into the HTML script element.",
+      "additionalAcceptance": [
+        {
+          "layer": "Chrome preview navigation",
+          "status": "verified",
+          "evidence": [
+            "On 2026-11-13, a dedicated Chrome tab opened the patched loopback preview with a fixture key containing URL punctuation. The browser reached the query-free root and displayed the Brainstorm Companion waiting page."
+          ]
+        }
+      ],
+      "tests": [
+        {
+          "file": "test/domains/eval/brainstorm-preview.test.ts",
+          "namePattern": "^serves a fixed bootstrap page and initializes only authorized preview sessions$",
+          "requiredNames": [
+            "serves a fixed bootstrap page and initializes only authorized preview sessions"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "bundle-diagnostic-literal-closing-brackets",
+      "sources": ["https://github.com/poco0222/comet/security/code-scanning/2"],
+      "behavior": "Match every closing bracket in a nested bundle validation field path literally.",
+      "coverageLevel": "unit",
+      "reproduction": "Use a non-text rule match to produce a diagnostic for resources.rules[0].match[0]. The old test assertion fails on the correct diagnostic.",
+      "expected": "The test accepts the diagnostic containing the complete literal manifest and field paths.",
+      "forbidden": "Interpret a closing bracket in the expected field path as part of a regular expression.",
+      "rootCause": "String.replace escaped only the first closing bracket before creating the assertion's regular expression.",
+      "tests": [
+        {
+          "file": "test/domains/bundle/bundle-load.test.ts",
+          "namePattern": "^loadBundle rejects 'a non-text rule match' with an actionable field path$",
+          "requiredNames": [
+            "loadBundle rejects 'a non-text rule match' with an actionable field path"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "bundle-diagnostic-literal-opening-brackets",
+      "sources": ["https://github.com/poco0222/comet/security/code-scanning/3"],
+      "behavior": "Match every opening bracket in a nested bundle validation field path literally.",
+      "coverageLevel": "unit",
+      "reproduction": "Use a non-text rule match to produce a diagnostic for resources.rules[0].match[0]. The old test assertion treats the second index as a character class.",
+      "expected": "The test accepts the diagnostic containing the complete literal manifest and field paths.",
+      "forbidden": "Interpret an opening bracket in the expected field path as part of a regular expression.",
+      "rootCause": "String.replace escaped only the first opening bracket before creating the assertion's regular expression.",
+      "tests": [
+        {
+          "file": "test/domains/bundle/bundle-load.test.ts",
+          "namePattern": "^loadBundle rejects 'a non-text rule match' with an actionable field path$",
+          "requiredNames": [
+            "loadBundle rejects 'a non-text rule match' with an actionable field path"
+          ]
+        }
+      ]
     }
   ]
 }

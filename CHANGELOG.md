@@ -15,6 +15,10 @@ All notable changes to @rpamis/comet will be documented in this file.
 - **Native candidate verification**: Ignore Comet's temporary checkpoint files in managed change directories so checkpoint publication does not interrupt verification of an unchanged candidate.
 - **Codex Hook compatibility**: Read `apply_patch` payloads from Codex's `tool_input.command` field so workflow and workspace write guards apply to real tool calls. Check both paths when a patch moves a file, while preserving permitted document edits.
 
+### Security
+
+- **Eval preview session**: Serve a fixed HTML page after validating the session token. The browser reads the token from the URL, keeping it out of the generated page source.
+
 ## What's Changed [0.5.2] - 2026-11-06
 
 ### Added

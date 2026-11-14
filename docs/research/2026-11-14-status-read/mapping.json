@@ -1,0 +1,20 @@
+{
+  "cases": [
+    {
+      "id": "native-group-single-repository-status-observation",
+      "kind": "tests-moved",
+      "authorization": "report:2026-11-10-agent-platform-execution",
+      "record": "docs/research/2026-11-14-status-read.zh.md",
+      "tests": [
+        {
+          "file": "test/domains/comet-native/native-sdk-status-observation.test.ts",
+          "namePattern": "^(?:reads SDK authority without reconciling a different portable checkpoint on ordinary reads|projects cancellation from business state and keeps independent continuations fresh)$",
+          "requiredNames": [
+            "reads SDK authority without reconciling a different portable checkpoint on ordinary reads",
+            "projects cancellation from business state and keeps independent continuations fresh"
+          ]
+        }
+      ]
+    }
+  ]
+}

@@ -11,6 +11,7 @@ import {
 } from '../../../domains/engine/runtime.js';
 import { createNativeSdkStateStore } from '../../../domains/comet-native/native-sdk-state-store.js';
 import { nativePortableStateFile } from '../../../domains/comet-native/native-portable-storage.js';
+import { resolveWorkspaceRuntimeRootSync } from '../../../domains/workflow-contract/workspace-runtime.js';
 
 import { runNativeCli } from '../../../domains/comet-native/native-cli.js';
 import { createNativeSdkTestChange } from '../../helpers/native-sdk-change.js';
@@ -110,6 +111,32 @@ it('projects cancellation from business state and keeps independent continuation
   await fs.rename(nativeRoot, movedRoot);
   await fs.symlink(movedRoot, nativeRoot, process.platform === 'win32' ? 'junction' : 'dir');
   await expect(inspectNativeSdkStatus({ projectRoot, name })).resolves.toEqual(first);
+  expect(pathsProbe).not.toHaveBeenCalled();
+  await expect(
+    nativePaths.nativeProjectPaths(projectRoot, 'docs', { readOnly: true }),
+  ).rejects.toThrow(/symbolic link/u);
+
+  await fs.unlink(nativeRoot);
+  await fs.rename(movedRoot, nativeRoot);
+
+  const cleanupDirectory = path.join(
+    resolveWorkspaceRuntimeRootSync(projectRoot),
+    'native',
+    'group-delivery',
+  );
+  const foreignReceipts = path.join(projectRoot, 'foreign-receipts');
+  await fs.mkdir(path.dirname(cleanupDirectory), { recursive: true });
+  await fs.mkdir(foreignReceipts);
+  await fs.writeFile(path.join(foreignReceipts, 'cleanup.json'), '{}');
+  await fs.symlink(
+    foreignReceipts,
+    cleanupDirectory,
+    process.platform === 'win32' ? 'junction' : 'dir',
+  );
+  await expect(inspectNativeSdkStatus({ projectRoot, name })).rejects.toThrow(
+    /Native workspace cleanup record crosses .*group-delivery/u,
+  );
+  expect(await fs.readFile(path.join(foreignReceipts, 'cleanup.json'), 'utf8')).toBe('{}');
   expect((await createNativeSdkRuntime(projectRoot).inspect(name)).revision).toBe(
     inspected.run.revision,
   );

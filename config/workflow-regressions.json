@@ -54480,7 +54480,41 @@
             "shares cancellation inspection only within one status projection and keeps independent continuations fresh"
           ]
         }
-      ]
+      ],
+      "testMigration": {
+        "kind": "tests-moved",
+        "reason": "Move the single-repository status assertion to SDK authority reads without artifact path inspection. Preserve fresh observations and verify link rejection at the actual artifact and cleanup-receipt boundaries.",
+        "authorization": "report:2026-11-10-agent-platform-execution",
+        "record": "docs/research/2026-11-14-status-read.zh.md",
+        "tests": [
+          {
+            "file": "test/domains/comet-native/native-sdk-status-observation.test.ts",
+            "namePattern": "^(?:reads SDK authority without reconciling a different portable checkpoint on ordinary reads|projects cancellation from business state and keeps independent continuations fresh)$",
+            "requiredNames": [
+              "reads SDK authority without reconciling a different portable checkpoint on ordinary reads",
+              "projects cancellation from business state and keeps independent continuations fresh"
+            ]
+          }
+        ],
+        "evidence": {
+          "registry": {
+            "file": "docs/research/2026-11-14-status-read/registry.json",
+            "sha256": "7dc9b8f987c5f32f3f7757788ee53dddf58385080175da4e63b0794fa2fd8e1a"
+          },
+          "tests": {
+            "file": "docs/research/2026-11-14-status-read/tests.json",
+            "sha256": "2b58bb707ca44ffe88a54fd014ae6d7f57ae8365703be1814958cc9fb3643a7d"
+          },
+          "mapping": {
+            "file": "docs/research/2026-11-14-status-read/mapping.json",
+            "sha256": "a208804e3658f188eb3efd274011e435f51159e1e9889336be39afcff97dcc57"
+          },
+          "patch": {
+            "file": "docs/research/2026-11-14-status-read/tests.patch",
+            "sha256": "f0f7cbacd4baac9c5b9e3a7beb23fa26d952bf036a1b431db0656d168ac73d0d"
+          }
+        }
+      }
     },
     {
       "id": "native-group-retired-worktree-paths",

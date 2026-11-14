@@ -1,0 +1,195 @@
+{
+  "cases": [
+    {
+      "id": "native-sdk-configured-input-exclusions",
+      "sources": [
+        "report:2026-11-12-sam-non-machining-feedback-input-scope"
+      ],
+      "behavior": "Apply configured input exclusions before Native SDK capture in coordinator and Git member workspaces.",
+      "coverageLevel": "public-cli",
+      "reproduction": "Comet 0.5.3 lists and fingerprints a synthetic tracked environment file in a child repository despite a matching native.snapshot.exclude. Passing an exclude pathspec to git status still invokes the tracked file's clean filter.",
+      "expected": "Preserve the project's explicit exclusion across update and workspace creation, skip the excluded file before reading it, keep other environment files bound, and permit Archive on the original scope. Require new evidence after a scope change and reject delivery commits containing changes to excluded tracked files.",
+      "forbidden": "Read an excluded tracked file through Git status, accept modified in-scope inputs, reuse evidence across exclusion scopes, or commit changes outside the accepted scope.",
+      "rootCause": "SDK raw input capture did not read the exclusion configuration and used unscoped Git status. Managed configuration writers also removed the legacy snapshot section wholesale.",
+      "tests": [
+        {
+          "file": "test/domains/comet-native/native-sdk-blocked-recovery.test.ts",
+          "namePattern": "^blocked Verifier recovery command contract excludes configured files from SDK receipts and refuses Archive when the exclusion policy changes$",
+          "requiredNames": [
+            "blocked Verifier recovery command contract excludes configured files from SDK receipts and refuses Archive when the exclusion policy changes"
+          ]
+        },
+        {
+          "file": "test/domains/comet-native/native-workspace-group.test.ts",
+          "namePattern": "^Native workspace group creation inherits project input exclusions in Git members without refreshing excluded worktree files$",
+          "requiredNames": [
+            "Native workspace group creation inherits project input exclusions in Git members without refreshing excluded worktree files"
+          ]
+        },
+        {
+          "file": "test/domains/comet-native/native-workspace-group-delivery.test.ts",
+          "namePattern": "^Native workspace group Git delivery blocks changes to excluded tracked inputs before creating any delivery commit$",
+          "requiredNames": [
+            "Native workspace group Git delivery blocks changes to excluded tracked inputs before creating any delivery commit"
+          ]
+        },
+        {
+          "file": "test/app/update.test.ts",
+          "namePattern": "^update command helpers upgrades a beta17 Native project without leaving retired bundles or hiding config$",
+          "requiredNames": [
+            "update command helpers upgrades a beta17 Native project without leaving retired bundles or hiding config"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "native-codegraph-cache-input-drift",
+      "sources": [
+        "report:2026-11-12-sam-mould-code-entry-cache-drift"
+      ],
+      "behavior": "Keep CodeGraph database updates out of Native candidate input drift and completed non-behavioral edit reconciliation.",
+      "coverageLevel": "public-cli",
+      "reproduction": "In Comet 0.5.3, a non-Git coordinator captures a child Git repository's ignored CodeGraph database. Updating only the database changes the candidate digest and the Archive command rejects it. The reported task also contains completed reviews whose only paths are CodeGraph cache files.",
+      "expected": "A database, sidecar, or writer PID update leaves the current candidate verifiable. Old completed non-behavioral cache observations remain readable and cannot block later validation.",
+      "forbidden": "Treat a cache refresh as a business edit, discard historic review receipts, or ignore changes to ordinary candidate files.",
+      "rootCause": "Physical input enumeration included the volatile CodeGraph files and generic edit reconciliation continued to compare their latest bytes with historical reviews.",
+      "tests": [
+        {
+          "file": "test/domains/comet-native/native-sdk-blocked-recovery.test.ts",
+          "namePattern": "^blocked Verifier recovery command contract archives an accepted non-Git project after only CodeGraph cache files change$",
+          "requiredNames": [
+            "blocked Verifier recovery command contract archives an accepted non-Git project after only CodeGraph cache files change"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "native-task-result-retry-after-formal-review",
+      "sources": [
+        "report:2026-11-12-sam-non-machining-feedback-formal-recovery"
+      ],
+      "behavior": "Revalidate the same Native Builder result after the current Agent reviews a formal edit that leaves approved requirements unchanged.",
+      "coverageLevel": "public-cli",
+      "reproduction": "In Comet 0.5.3, submit a Build check request after editing the approved brief, record a non-behavioral review, and resubmit the identical result file. Native next still returns the original document-drift rejection.",
+      "expected": "Validate the unchanged result again on the original Action and claim, retain the rejection history, and run the requested check once.",
+      "forbidden": "Accept unreviewed formal edits, replace the original claim, remove rejected outcomes, or repeat checks when an accepted result is replayed.",
+      "rootCause": "The high-level command always generated the same outcome ID for identical bytes, so the SDK replayed the recorded rejection before checking the current documents.",
+      "tests": [
+        {
+          "file": "test/domains/comet-native/native-shape-incremental.test.ts",
+          "namePattern": "^Native Shape incremental contract revalidates the same public Builder result after reviewing changed formal documents$",
+          "requiredNames": [
+            "Native Shape incremental contract revalidates the same public Builder result after reviewing changed formal documents"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "native-formal-review-restored-approved-bytes",
+      "sources": [
+        "report:2026-11-12-sam-non-machining-feedback-formal-recovery"
+      ],
+      "behavior": "Resume Native after an applied non-behavioral formal edit is reviewed and the file is restored to its approved bytes.",
+      "coverageLevel": "public-cli",
+      "reproduction": "In Comet 0.5.3, record a review for an applied brief edit, restore the approved original, and run edit-review prepare-applied. The command returns itself and the same historic receipt on every call.",
+      "expected": "Keep the historic review receipt and the restored file, return no pending review for the reverted edit, and resume the original Builder.",
+      "forbidden": "Replay the reverted edit, change the original Run or claim, or let an unrelated unreviewed requirement change pass.",
+      "rootCause": "The continuation and completion checks treated an already applied and subsequently reverted edit as a pending edit whose approved output still had to be written.",
+      "tests": [
+        {
+          "file": "test/domains/comet-native/native-shape-incremental.test.ts",
+          "namePattern": "^Native Shape incremental contract resumes after restoring approved formal bytes without replaying the reviewed edit$",
+          "requiredNames": [
+            "Native Shape incremental contract resumes after restoring approved formal bytes without replaying the reviewed edit"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "native-verify-resume-after-input-exclusions-change",
+      "sources": [
+        "report:2026-11-12-sam-native-exclusion-change-verify"
+      ],
+      "behavior": "Finish a claimed Native v3 Verify after its input exclusions change and verify a successor in the original Run.",
+      "coverageLevel": "public-cli",
+      "reproduction": "On installed 0.5.3 at 70ed845, run the managed checks and claim Verify. Update native.snapshot.exclude, then run edit-review observe. It exits 1 and asks for a successor candidate while native status still only waits for the original Verifier result.",
+      "expected": "Read-only status and observe return a scope recovery request for the original Verifier. Submitting it closes the stale task and lets the Builder submit a successor under the same Run and Shape with fresh evidence and a new Verify.",
+      "forbidden": "Advance on status or observe, accept a stale pass or a result from another session, reuse the stale request after the rules revert, replay the transition on duplicate submission, or reuse the old checks as new evidence.",
+      "rootCause": "The exclusion hash was bound to check evidence, but scope drift had no outcome that could settle an already claimed Verifier without a product verdict.",
+      "tests": [
+        {
+          "file": "test/domains/comet-native/native-sdk-blocked-recovery.test.ts",
+          "namePattern": "^blocked Verifier recovery command contract resumes a claimed Verify in the original Run after input exclusions change$",
+          "requiredNames": [
+            "blocked Verifier recovery command contract resumes a claimed Verify in the original Run after input exclusions change"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "native-verify-ignore-checkpoint-temporary-file",
+      "sources": [
+        "report:2026-11-13-sam-native-candidate-check-blocked"
+      ],
+      "behavior": "Run Native successor checks when a Comet checkpoint temporary file is present during input capture.",
+      "coverageLevel": "public-cli",
+      "reproduction": "In a temporary non-Git coordinator with child Git repositories, submit a successor Builder candidate and run native next. Hold a copy of the SDK checkpoint at its atomic temporary filename after the check is claimed. Installed 0.5.3 refuses to start the command and marks the check Action unknown.",
+      "expected": "The temporary checkpoint is excluded, the successor check executes once, and Verify continues with the original Run and Shape and preserved prior receipts.",
+      "forbidden": "Treat the temporary checkpoint as implementation drift, reuse the prior check as current evidence, or ignore a similarly named file in a project source directory.",
+      "rootCause": "Native input capture excluded the published comet-state.yaml but included the atomic writer's sibling temporary file in the candidate and in the directory stability check.",
+      "tests": [
+        {
+          "file": "test/domains/comet-native/native-sdk-blocked-recovery.test.ts",
+          "namePattern": "^blocked Verifier recovery command contract checks a successor when a (checkpoint|project input) file appears after the check is claimed$",
+          "requiredNames": [
+            "blocked Verifier recovery command contract checks a successor when a checkpoint file appears after the check is claimed",
+            "blocked Verifier recovery command contract checks a successor when a project input file appears after the check is claimed"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "native-successor-checks-after-checkpoint-recovery",
+      "sources": [
+        "report:2026-11-13-sam-native-restored-check-input-missing"
+      ],
+      "behavior": "Run fresh Native successor checks when the restored Run has historical receipts but their input snapshots are absent from the current Runtime.",
+      "coverageLevel": "public-cli",
+      "reproduction": "Create a Native v3 Run in a temporary coordinator with two Git repositories, complete a check, and return to Build. Restore the portable checkpoint in a new checkout instance at the same path, submit the successor, and run native next. Installed 0.5.3 at 9fe250e stops before the first check with a missing raw input record.",
+      "expected": "Bind checks to the new Builder's actual inputs, execute the repeatable check once, and dispatch Verify with the original Run and Shape and intact historical receipts.",
+      "forbidden": "Reuse an unverifiable historical receipt, fabricate its snapshot from current files, or modify the previous Runtime's input record.",
+      "rootCause": "The new check treated the most recent historical afterRef as a required input before it could capture the new candidate; reuse also read the missing snapshot outside its evidence validation fallback.",
+      "tests": [
+        {
+          "file": "test/domains/comet-native/native-sdk-blocked-recovery.test.ts",
+          "namePattern": "^blocked Verifier recovery command contract runs fresh checks for a successor after recovering a checkpoint without old raw inputs$",
+          "requiredNames": [
+            "blocked Verifier recovery command contract runs fresh checks for a successor after recovering a checkpoint without old raw inputs"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "native-verify-ignore-codegraph-daemon-files",
+      "sources": [
+        "report:2026-11-13-sam-native-codegraph-daemon-snapshot"
+      ],
+      "behavior": "Keep CodeGraph daemon files out of Native candidate input while checking ordinary files in the same directory.",
+      "coverageLevel": "public-cli",
+      "reproduction": "Submit a successor candidate in a temporary non-Git coordinator, then start a local socket at .codegraph/daemon.sock and create daemon.pid. Installed 0.5.3 at 9fe250e rejects the check outcome as an incomplete snapshot.",
+      "expected": "The CodeGraph daemon files do not affect input completeness or change the candidate; the normal check and Verify handoff succeed.",
+      "forbidden": "Exclude ordinary project files under .codegraph or accept their unreviewed edits.",
+      "rootCause": "The CodeGraph exclusion recognized database files and writer.pid but omitted the daemon's socket and PID lock.",
+      "tests": [
+        {
+          "file": "test/domains/comet-native/native-sdk-blocked-recovery.test.ts",
+          "namePattern": "^blocked Verifier recovery command contract checks a successor with a CodeGraph (daemon|project input) change$",
+          "requiredNames": [
+            "blocked Verifier recovery command contract checks a successor with a CodeGraph daemon change",
+            "blocked Verifier recovery command contract checks a successor with a CodeGraph project input change"
+          ]
+        }
+      ]
+    }
+  ]
+}

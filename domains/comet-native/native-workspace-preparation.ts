@@ -1,3 +1,5 @@
+import { NativeWorkspacePreparationError } from './native-runtime-errors.js';
+export { NativeWorkspacePreparationError } from './native-runtime-errors.js';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
 
@@ -16,13 +18,15 @@ import {
 
 import { readProjectConfig, writeProjectConfig } from './native-config.js';
 import { recordNativeWorkspaceConfig } from './native-workspace-config.js';
-import { withNativeLockRecovery } from './native-lock.js';
-import { nativeProjectPaths } from './native-paths.js';
 import type { CometProjectConfig } from './native-types.js';
 import type { NativeWorkspaceBinding, NativeWorkspaceIsolation } from './native-workspace.js';
 import { canonicalHash } from './native-canonical-hash.js';
 import { initializeNativeWorkspaceGroupSpecs } from './native-workspace-group-specs.js';
-import { prepareNativeWorkspaceSetup } from './native-workspace-setup.js';
+import {
+  prepareNativeWorkspaceSetup,
+  type NativeWorkspaceSetupProgress,
+  type NativeWorkspaceSetupReport,
+} from './native-workspace-setup.js';
 import {
   createNativeWorkspaceGroup,
   readNativeWorkspaceGroup,
@@ -40,23 +44,13 @@ export interface NativeWorkspacePreparation {
   gitExcludeUpdated: boolean;
   configInitialized: boolean;
   group?: NativeWorkspaceGroupPlan;
+  setup?: NativeWorkspaceSetupProgress;
 }
 
 export interface PreparedNativeWorkspace {
   projectRoot: string;
   binding: NativeWorkspaceBinding;
   preparation: NativeWorkspacePreparation;
-}
-
-export class NativeWorkspacePreparationError extends Error {
-  constructor(
-    message: string,
-    readonly preparation: NativeWorkspacePreparation,
-    options?: ErrorOptions,
-  ) {
-    super(message, options);
-    this.name = 'NativeWorkspacePreparationError';
-  }
 }
 
 function isInside(parent: string, target: string): boolean {
@@ -68,7 +62,10 @@ function isInside(parent: string, target: string): boolean {
 }
 
 function nativeConfigIdentity(config: CometProjectConfig): string {
-  return JSON.stringify({ native: config.native, repositories: config.repositories });
+  // 派发上限由 Parent 逐轮读取，Child worktree 保留原值不影响工作区绑定。
+  const workspaceConfig = { ...config.native };
+  delete workspaceConfig.max_parallel_children;
+  return JSON.stringify({ native: workspaceConfig, repositories: config.repositories });
 }
 
 async function ensureConfig(
@@ -163,6 +160,7 @@ export async function prepareNativeWorkspace(options: {
   worktreePath?: string;
   sourceConfig: CometProjectConfig | null;
   groupPlan?: NativeWorkspaceGroupPlan;
+  setupReport?: NativeWorkspaceSetupReport;
 }): Promise<PreparedNativeWorkspace> {
   const initialRoot = path.resolve(options.projectRoot);
   if (options.groupPlan) {
@@ -172,13 +170,28 @@ export async function prepareNativeWorkspace(options: {
       options.changeBranch ||
       options.targetBranch ||
       plan.name !== options.name ||
-      plan.coordinatorRoot !== (await fs.realpath(initialRoot)) ||
-      plan.configurationHash !==
-        canonicalHash('comet.native.workspace-group-config', options.sourceConfig)
+      plan.coordinatorRoot !== (await fs.realpath(initialRoot))
     )
       throw new Error(
         'Native workspace group preparation does not match its plan or source configuration',
       );
+    if (
+      plan.configurationHash !==
+      canonicalHash('comet.native.workspace-group-config', options.sourceConfig)
+    ) {
+      // 已建立的旧组由登记和任务自身配置恢复，历史配置摘要包含已撤下的字段。
+      const previous = (await pathExists(plan.projectRoot))
+        ? await readNativeWorkspaceGroup(plan.projectRoot)
+        : null;
+      const taskConfig = previous ? await readProjectConfig(plan.projectRoot) : null;
+      if (
+        previous?.plan.hash !== plan.hash ||
+        !taskConfig ||
+        !options.sourceConfig ||
+        nativeConfigIdentity(taskConfig) !== nativeConfigIdentity(options.sourceConfig)
+      )
+        throw new Error('Native workspace group configuration differs from its creation plan');
+    }
     const createdBranch = plan.repositories.some(
       (entry) => !isLocalGitBranch(entry.sourceRoot, entry.changeBranch),
     );
@@ -191,11 +204,12 @@ export async function prepareNativeWorkspace(options: {
       options.sourceConfig?.native.artifact_root ?? 'docs',
     );
     const configInitialized = await ensureConfig(group.plan.projectRoot, options.sourceConfig);
-    await prepareNativeWorkspaceSetup({
+    const setup = await prepareNativeWorkspaceSetup({
       sourceRoot: plan.coordinatorRoot,
       targetRoot: plan.projectRoot,
       repositories: plan.repositories,
       setup: plan.setup,
+      report: options.setupReport,
     });
     return {
       projectRoot: plan.projectRoot,
@@ -216,6 +230,7 @@ export async function prepareNativeWorkspace(options: {
         gitExcludeUpdated: false,
         configInitialized,
         group: plan,
+        ...(setup ? { setup } : {}),
       },
     };
   }
@@ -231,6 +246,12 @@ export async function prepareNativeWorkspace(options: {
       throw new Error(
         'Native task workspace is already bound to its original group; use its original new command to recover',
       );
+    const setup = await prepareNativeWorkspaceSetup({
+      sourceRoot: group.plan.coordinatorRoot,
+      targetRoot: initialRoot,
+      repositories: group.plan.repositories,
+      setup: group.plan.setup,
+    });
     return {
       projectRoot: initialRoot,
       binding: {
@@ -250,6 +271,7 @@ export async function prepareNativeWorkspace(options: {
         gitExcludeUpdated: false,
         configInitialized: false,
         group: group.plan,
+        ...(setup ? { setup } : {}),
       },
     };
   }
@@ -286,242 +308,229 @@ export async function prepareNativeWorkspace(options: {
     };
   }
 
-  const nativePaths = await nativeProjectPaths(
-    initialRoot,
-    options.sourceConfig?.native.artifact_root ?? 'docs',
-  );
-  return withNativeLockRecovery(
-    [{ runtimeDir: nativePaths.runtimeDir, locksDir: nativePaths.locksDir }],
-    `prepare Native ${options.isolation} workspace`,
-    async () => {
-      const context = inspectGitWorktree(initialRoot);
-      if (
-        !context.isGitWorktree ||
-        context.currentBranch === null ||
-        context.primaryWorktreeRoot === null ||
-        context.currentWorktreeRoot === null
-      ) {
-        throw new Error('Native branch and worktree isolation require an attached Git branch');
-      }
-      const changeBranch = options.changeBranch ?? `comet/${options.name}`;
-      assertValidGitBranchName(initialRoot, changeBranch);
-      const alreadyPrepared = context.currentBranch === changeBranch;
-      const targetBranch =
-        options.targetBranch ?? (alreadyPrepared ? undefined : context.currentBranch);
-      if (!targetBranch) {
-        throw new Error(
-          'Native isolated workspace already on its change branch requires --target-branch',
-        );
-      }
-      assertValidGitBranchName(initialRoot, targetBranch);
-      if (!isLocalGitBranch(initialRoot, targetBranch)) {
-        throw new Error(`Native target branch is not a verified local branch: ${targetBranch}`);
-      }
+  const context = inspectGitWorktree(initialRoot);
+  if (
+    !context.isGitWorktree ||
+    context.currentBranch === null ||
+    context.primaryWorktreeRoot === null ||
+    context.currentWorktreeRoot === null
+  ) {
+    throw new Error('Native branch and worktree isolation require an attached Git branch');
+  }
+  const changeBranch = options.changeBranch ?? `comet/${options.name}`;
+  assertValidGitBranchName(initialRoot, changeBranch);
+  const alreadyPrepared = context.currentBranch === changeBranch;
+  const targetBranch =
+    options.targetBranch ?? (alreadyPrepared ? undefined : context.currentBranch);
+  if (!targetBranch) {
+    throw new Error(
+      'Native isolated workspace already on its change branch requires --target-branch',
+    );
+  }
+  assertValidGitBranchName(initialRoot, targetBranch);
+  if (!isLocalGitBranch(initialRoot, targetBranch)) {
+    throw new Error(`Native target branch is not a verified local branch: ${targetBranch}`);
+  }
 
-      const runtimeExcludeUpdated = await appendLocalExclude(context.primaryWorktreeRoot);
+  const runtimeExcludeUpdated = await appendLocalExclude(context.primaryWorktreeRoot);
 
-      if (options.isolation === 'branch') {
-        if (options.worktreePath) {
-          throw new Error('--worktree-path is only valid with --isolation worktree');
-        }
-        let createdBranch = false;
-        if (!alreadyPrepared) {
-          if (!gitWorktreeIsClean(initialRoot)) {
-            throw new Error('Native branch isolation requires a clean current working directory');
-          }
-          if (isLocalGitBranch(initialRoot, changeBranch)) {
-            throw new Error(`Native change branch already exists: ${changeBranch}`);
-          }
-          runGitCommand(initialRoot, ['switch', '-c', changeBranch, targetBranch]);
-          createdBranch = true;
-        }
-        let configInitialized: boolean;
-        try {
-          configInitialized = await ensureConfig(initialRoot, options.sourceConfig);
-        } catch (error) {
-          throw new NativeWorkspacePreparationError(
-            `Native branch preparation is incomplete: ${(error as Error).message}`,
-            {
-              isolation: 'branch',
-              projectRoot: initialRoot,
-              changeBranch,
-              targetBranch,
-              worktreePath: null,
-              createdBranch,
-              createdWorktree: false,
-              gitExcludeUpdated: runtimeExcludeUpdated,
-              configInitialized: false,
-            },
-            { cause: error },
-          );
-        }
-        return {
+  if (options.isolation === 'branch') {
+    if (options.worktreePath) {
+      throw new Error('--worktree-path is only valid with --isolation worktree');
+    }
+    let createdBranch = false;
+    if (!alreadyPrepared) {
+      if (!gitWorktreeIsClean(initialRoot)) {
+        throw new Error('Native branch isolation requires a clean current working directory');
+      }
+      if (isLocalGitBranch(initialRoot, changeBranch)) {
+        throw new Error(`Native change branch already exists: ${changeBranch}`);
+      }
+      runGitCommand(initialRoot, ['switch', '-c', changeBranch, targetBranch]);
+      createdBranch = true;
+    }
+    let configInitialized: boolean;
+    try {
+      configInitialized = await ensureConfig(initialRoot, options.sourceConfig);
+    } catch (error) {
+      throw new NativeWorkspacePreparationError(
+        `Native branch preparation is incomplete: ${(error as Error).message}`,
+        {
+          isolation: 'branch',
           projectRoot: initialRoot,
-          binding: { isolation: 'branch', changeBranch, targetBranch },
-          preparation: {
-            isolation: 'branch',
-            projectRoot: initialRoot,
-            changeBranch,
-            targetBranch,
-            worktreePath: null,
-            createdBranch,
-            createdWorktree: false,
-            gitExcludeUpdated: runtimeExcludeUpdated,
-            configInitialized,
-          },
-        };
-      }
-
-      if (alreadyPrepared) {
-        if (!context.isSecondaryWorktree) {
-          throw new Error('Native worktree isolation must use a linked Git worktree');
-        }
-        const requestedWorktreePath = options.worktreePath
-          ? path.resolve(context.primaryWorktreeRoot, options.worktreePath)
-          : undefined;
-        if (
-          requestedWorktreePath &&
-          !samePath(requestedWorktreePath, context.currentWorktreeRoot)
-        ) {
-          throw new Error(
-            `Native worktree path ${requestedWorktreePath} does not match the current worktree ${context.currentWorktreeRoot}`,
-          );
-        }
-        let configInitialized: boolean;
-        try {
-          configInitialized = await ensureConfig(initialRoot, options.sourceConfig);
-        } catch (error) {
-          throw new NativeWorkspacePreparationError(
-            `Native worktree preparation is incomplete: ${(error as Error).message}`,
-            {
-              isolation: 'worktree',
-              projectRoot: initialRoot,
-              changeBranch,
-              targetBranch,
-              worktreePath: initialRoot,
-              createdBranch: false,
-              createdWorktree: false,
-              gitExcludeUpdated: runtimeExcludeUpdated,
-              configInitialized: false,
-            },
-            { cause: error },
-          );
-        }
-        return {
-          projectRoot: initialRoot,
-          binding: { isolation: 'worktree', changeBranch, targetBranch },
-          preparation: {
-            isolation: 'worktree',
-            projectRoot: initialRoot,
-            changeBranch,
-            targetBranch,
-            worktreePath: initialRoot,
-            createdBranch: false,
-            createdWorktree: false,
-            gitExcludeUpdated: runtimeExcludeUpdated,
-            configInitialized,
-          },
-        };
-      }
-      let entries = listGitWorktrees(context.primaryWorktreeRoot);
-      const existing = entries.find((entry) => entry.branch === changeBranch);
-      if (existing && (await pathExists(existing.root))) {
-        const requestedWorktreePath = options.worktreePath
-          ? path.resolve(context.primaryWorktreeRoot, options.worktreePath)
-          : undefined;
-        if (requestedWorktreePath && !samePath(requestedWorktreePath, existing.root)) {
-          throw new Error(
-            `Native worktree branch ${changeBranch} is already checked out at ${existing.root}`,
-          );
-        }
-        let configInitialized: boolean;
-        try {
-          configInitialized = await ensureConfig(existing.root, options.sourceConfig);
-        } catch (error) {
-          throw new NativeWorkspacePreparationError(
-            `Native worktree preparation is incomplete: ${(error as Error).message}`,
-            {
-              isolation: 'worktree',
-              projectRoot: existing.root,
-              changeBranch,
-              targetBranch,
-              worktreePath: existing.root,
-              createdBranch: false,
-              createdWorktree: false,
-              gitExcludeUpdated: runtimeExcludeUpdated,
-              configInitialized: false,
-            },
-            { cause: error },
-          );
-        }
-        return {
-          projectRoot: existing.root,
-          binding: { isolation: 'worktree', changeBranch, targetBranch },
-          preparation: {
-            isolation: 'worktree',
-            projectRoot: existing.root,
-            changeBranch,
-            targetBranch,
-            worktreePath: existing.root,
-            createdBranch: false,
-            createdWorktree: false,
-            gitExcludeUpdated: runtimeExcludeUpdated,
-            configInitialized,
-          },
-        };
-      }
-      if (existing && !(await pathExists(existing.root))) {
-        runGitCommand(context.primaryWorktreeRoot, ['worktree', 'prune']);
-        entries = listGitWorktrees(context.primaryWorktreeRoot);
-      }
-      const branchExists = isLocalGitBranch(initialRoot, changeBranch);
-      if (entries.some((entry) => entry.branch === changeBranch)) {
-        throw new Error(`Native change branch ${changeBranch} is already registered to a worktree`);
-      }
-      const worktreePath = resolveWorktreePath(
-        context.primaryWorktreeRoot,
-        options.name,
-        options.worktreePath,
+          changeBranch,
+          targetBranch,
+          worktreePath: null,
+          createdBranch,
+          createdWorktree: false,
+          gitExcludeUpdated: runtimeExcludeUpdated,
+          configInitialized: false,
+        },
+        { cause: error },
       );
-      await assertPathAbsent(worktreePath);
-      const worktreeExcludeUpdated = await appendLocalExclude(
-        context.primaryWorktreeRoot,
-        worktreePath,
-      );
-      const gitExcludeUpdated = runtimeExcludeUpdated || worktreeExcludeUpdated;
-      const preparation: NativeWorkspacePreparation = {
-        isolation: 'worktree',
-        projectRoot: worktreePath,
+    }
+    return {
+      projectRoot: initialRoot,
+      binding: { isolation: 'branch', changeBranch, targetBranch },
+      preparation: {
+        isolation: 'branch',
+        projectRoot: initialRoot,
         changeBranch,
         targetBranch,
-        worktreePath,
+        worktreePath: null,
+        createdBranch,
+        createdWorktree: false,
+        gitExcludeUpdated: runtimeExcludeUpdated,
+        configInitialized,
+      },
+    };
+  }
+
+  if (alreadyPrepared) {
+    if (!context.isSecondaryWorktree) {
+      throw new Error('Native worktree isolation must use a linked Git worktree');
+    }
+    const requestedWorktreePath = options.worktreePath
+      ? path.resolve(context.primaryWorktreeRoot, options.worktreePath)
+      : undefined;
+    if (requestedWorktreePath && !samePath(requestedWorktreePath, context.currentWorktreeRoot)) {
+      throw new Error(
+        `Native worktree path ${requestedWorktreePath} does not match the current worktree ${context.currentWorktreeRoot}`,
+      );
+    }
+    let configInitialized: boolean;
+    try {
+      configInitialized = await ensureConfig(initialRoot, options.sourceConfig);
+    } catch (error) {
+      throw new NativeWorkspacePreparationError(
+        `Native worktree preparation is incomplete: ${(error as Error).message}`,
+        {
+          isolation: 'worktree',
+          projectRoot: initialRoot,
+          changeBranch,
+          targetBranch,
+          worktreePath: initialRoot,
+          createdBranch: false,
+          createdWorktree: false,
+          gitExcludeUpdated: runtimeExcludeUpdated,
+          configInitialized: false,
+        },
+        { cause: error },
+      );
+    }
+    return {
+      projectRoot: initialRoot,
+      binding: { isolation: 'worktree', changeBranch, targetBranch },
+      preparation: {
+        isolation: 'worktree',
+        projectRoot: initialRoot,
+        changeBranch,
+        targetBranch,
+        worktreePath: initialRoot,
         createdBranch: false,
         createdWorktree: false,
-        gitExcludeUpdated,
-        configInitialized: false,
-      };
-      try {
-        runGitCommand(
-          context.primaryWorktreeRoot,
-          branchExists
-            ? ['worktree', 'add', worktreePath, changeBranch]
-            : ['worktree', 'add', '-b', changeBranch, worktreePath, targetBranch],
-        );
-        preparation.createdBranch = !branchExists;
-        preparation.createdWorktree = true;
-        preparation.configInitialized = await ensureConfig(worktreePath, options.sourceConfig);
-      } catch (error) {
-        throw new NativeWorkspacePreparationError(
-          `Native worktree preparation is incomplete: ${(error as Error).message}`,
-          preparation,
-          { cause: error },
-        );
-      }
-      return {
-        projectRoot: worktreePath,
-        binding: { isolation: 'worktree', changeBranch, targetBranch },
-        preparation,
-      };
-    },
+        gitExcludeUpdated: runtimeExcludeUpdated,
+        configInitialized,
+      },
+    };
+  }
+  let entries = listGitWorktrees(context.primaryWorktreeRoot);
+  const existing = entries.find((entry) => entry.branch === changeBranch);
+  if (existing && (await pathExists(existing.root))) {
+    const requestedWorktreePath = options.worktreePath
+      ? path.resolve(context.primaryWorktreeRoot, options.worktreePath)
+      : undefined;
+    if (requestedWorktreePath && !samePath(requestedWorktreePath, existing.root)) {
+      throw new Error(
+        `Native worktree branch ${changeBranch} is already checked out at ${existing.root}`,
+      );
+    }
+    let configInitialized: boolean;
+    try {
+      configInitialized = await ensureConfig(existing.root, options.sourceConfig);
+    } catch (error) {
+      throw new NativeWorkspacePreparationError(
+        `Native worktree preparation is incomplete: ${(error as Error).message}`,
+        {
+          isolation: 'worktree',
+          projectRoot: existing.root,
+          changeBranch,
+          targetBranch,
+          worktreePath: existing.root,
+          createdBranch: false,
+          createdWorktree: false,
+          gitExcludeUpdated: runtimeExcludeUpdated,
+          configInitialized: false,
+        },
+        { cause: error },
+      );
+    }
+    return {
+      projectRoot: existing.root,
+      binding: { isolation: 'worktree', changeBranch, targetBranch },
+      preparation: {
+        isolation: 'worktree',
+        projectRoot: existing.root,
+        changeBranch,
+        targetBranch,
+        worktreePath: existing.root,
+        createdBranch: false,
+        createdWorktree: false,
+        gitExcludeUpdated: runtimeExcludeUpdated,
+        configInitialized,
+      },
+    };
+  }
+  if (existing && !(await pathExists(existing.root))) {
+    runGitCommand(context.primaryWorktreeRoot, ['worktree', 'prune']);
+    entries = listGitWorktrees(context.primaryWorktreeRoot);
+  }
+  const branchExists = isLocalGitBranch(initialRoot, changeBranch);
+  if (entries.some((entry) => entry.branch === changeBranch)) {
+    throw new Error(`Native change branch ${changeBranch} is already registered to a worktree`);
+  }
+  const worktreePath = resolveWorktreePath(
+    context.primaryWorktreeRoot,
+    options.name,
+    options.worktreePath,
   );
+  await assertPathAbsent(worktreePath);
+  const worktreeExcludeUpdated = await appendLocalExclude(
+    context.primaryWorktreeRoot,
+    worktreePath,
+  );
+  const gitExcludeUpdated = runtimeExcludeUpdated || worktreeExcludeUpdated;
+  const preparation: NativeWorkspacePreparation = {
+    isolation: 'worktree',
+    projectRoot: worktreePath,
+    changeBranch,
+    targetBranch,
+    worktreePath,
+    createdBranch: false,
+    createdWorktree: false,
+    gitExcludeUpdated,
+    configInitialized: false,
+  };
+  try {
+    runGitCommand(
+      context.primaryWorktreeRoot,
+      branchExists
+        ? ['worktree', 'add', worktreePath, changeBranch]
+        : ['worktree', 'add', '-b', changeBranch, worktreePath, targetBranch],
+    );
+    preparation.createdBranch = !branchExists;
+    preparation.createdWorktree = true;
+    preparation.configInitialized = await ensureConfig(worktreePath, options.sourceConfig);
+  } catch (error) {
+    throw new NativeWorkspacePreparationError(
+      `Native worktree preparation is incomplete: ${(error as Error).message}`,
+      preparation,
+      { cause: error },
+    );
+  }
+  return {
+    projectRoot: worktreePath,
+    binding: { isolation: 'worktree', changeBranch, targetBranch },
+    preparation,
+  };
 }

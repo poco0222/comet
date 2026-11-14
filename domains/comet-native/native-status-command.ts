@@ -57,9 +57,9 @@ export async function nativeStatusCommand(
       if (cursor) throw new NativeUsageError('SDK Native status details do not use --cursor');
       return sdkStatusResult(retained, root);
     }
+    projectRoot = await resolveNativeSdkCommandRoot(projectRoot, name, { readOnly: true });
   }
-  if (name) projectRoot = await resolveNativeSdkCommandRoot(projectRoot, name, { readOnly: true });
-  let executionCwd = projectRoot;
+  const executionCwd = projectRoot;
   if (name && (await readSdkChangeOwner(projectRoot, 'native', name))) {
     if (cursor) throw new NativeUsageError('SDK Native status details do not use --cursor');
     return sdkStatusResult(
@@ -71,9 +71,6 @@ export async function nativeStatusCommand(
     ? await inspectDiscoveredNativeStatus({
         projectRoot,
         name,
-        onSelectedRoot: (selectedRoot) => {
-          executionCwd = selectedRoot;
-        },
         details,
         ...(cursor ? { detailsCursor: cursor } : {}),
       })

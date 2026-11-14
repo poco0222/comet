@@ -31,7 +31,6 @@ import {
   parseWorkflowProjectConfigDocument,
   projectConfigComment,
   renderStructuredProjectConfig,
-  workflowNativeCustomSnapshotExcludes,
 } from '../workflow-contract/project-config.js';
 import { readWorkflowProjectConfigSnapshot } from '../workflow-contract/project-config-reader.js';
 import { writeWorkflowProjectConfigSource } from '../workflow-contract/project-config-writer.js';
@@ -2574,7 +2573,7 @@ async function mergeProjectConfig(
       }
       nativeBlock[f.key] = coerceConfigScalar(value);
     }
-    const exclude = workflowNativeCustomSnapshotExcludes(parsed?.native?.snapshot.exclude ?? []);
+    const exclude = parsed?.native?.legacyDeliveryExcludes ?? [];
     if (exclude.length) nativeBlock.snapshot = { exclude };
     else delete nativeBlock.snapshot;
     root.native = nativeBlock;
@@ -2607,7 +2606,11 @@ async function mergeProjectConfig(
     }
   }
 
-  const output = renderStructuredProjectConfig(root, resolvedLanguage === 'zh-CN' ? 'zh-CN' : 'en');
+  const output = renderStructuredProjectConfig(
+    root,
+    resolvedLanguage === 'zh-CN' ? 'zh-CN' : 'en',
+    snapshot.source,
+  );
   parseWorkflowProjectConfigDocument(output, { allowPartialProject: true });
   await writeWorkflowProjectConfigSource(projectPath, output, {
     allowPartialProject: !completeProjectConfig,
@@ -2674,6 +2677,7 @@ export {
   removeManagedWindsurfHooksFromJsonFile,
   planSkillDirectoryCopy,
   mergeProjectConfig,
+  mergeHookGroups,
   parseProjectConfigOverrides,
   renderProjectConfig,
   getCentralSkillsDir,

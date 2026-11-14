@@ -3,25 +3,35 @@ import path from 'node:path';
 
 import { inspectGitWorktree, samePath } from '../../platform/paths/git-worktree.js';
 import { normalizeWorkflowRelativePath } from '../workflow-contract/project-config.js';
-import { defaultProjectConfig, readProjectConfig } from './native-config.js';
-import { atomicWriteText } from './native-atomic-file.js';
 import {
   discoverWorkflowCapabilityCandidates,
   renderCapabilityAssociationDraft,
 } from '../project-knowledge/capability-discovery.js';
-import { readNativeBoundedTextFile } from './native-bounded-file.js';
 import {
-  inspectNativeTotalSpec,
-  nativeLegacySectionHash,
-  nativeTotalSpecHash,
-  renderNativeDelta,
-  type NativeDeltaDocument,
-} from './native-delta-spec.js';
+  assertChangeNotSdkOwned,
+  readSdkChangeOwner,
+} from '../workflow-contract/change-runtime-owner.js';
+import { formatCliCommandArgs } from '../workflow-contract/output-envelope.js';
+import { ensureCometProjectGitignore } from '../workflow-contract/project-gitignore.js';
+import { atomicWriteText } from './native-atomic-file.js';
+import { readNativeBoundedTextFile } from './native-bounded-file.js';
 import {
   createNativeCapabilityKnowledgeProvider,
   readNativeCapabilityDiscoveryCache,
   writeNativeCapabilityDiscoveryCache,
 } from './native-capability-discovery.js';
+import {
+  assertNoArguments,
+  languageOption,
+  NativeUsageError,
+  requiredPositional,
+  success,
+  takeFlag,
+  takeOption,
+  type DispatchResult,
+} from './native-cli-shared.js';
+import { defaultProjectConfig, readProjectConfig } from './native-config.js';
+import { renderNativeDelta, type NativeDeltaDocument } from './native-delta-spec.js';
 import {
   ensureNativeDirectories,
   nativeChangeArtifactPaths,
@@ -30,44 +40,32 @@ import {
 } from './native-paths.js';
 import { nativePortableContinuation } from './native-portable-continuation.js';
 import { createNativePortableChange, nativePortableChangeDir } from './native-portable-runtime.js';
+import { parseNativePortableState } from './native-portable-state.js';
+import { createNativeSdkChange } from './native-sdk-create.js';
+import { projectNativeSdkStatus } from './native-sdk-status.js';
 import { selectNativeChange } from './native-selection.js';
-import { prepareNativeWorkspace } from './native-workspace-preparation.js';
+import { recordNativeWorkspaceConfig } from './native-workspace-config.js';
 import {
   planNativeWorkspaceGroup,
   readNativeWorkspaceGroup,
   readNativeWorkspaceGroupPlan,
   readNativeWorkspaceGroupRecord,
 } from './native-workspace-group.js';
-import { recordNativeWorkspaceConfig } from './native-workspace-config.js';
-import { planNativeWorkspaceSetup } from './native-workspace-setup.js';
-import { canonicalHash } from './native-canonical-hash.js';
+import { prepareNativeWorkspace } from './native-workspace-preparation.js';
+import {
+  planNativeWorkspaceSetup,
+  readNativeWorkspaceSetupReport,
+} from './native-workspace-setup.js';
 import { type NativeWorkspaceIsolation } from './native-workspace.js';
-import { ensureCometProjectGitignore } from '../workflow-contract/project-gitignore.js';
-import {
-  assertChangeNotSdkOwned,
-  readSdkChangeOwner,
-} from '../workflow-contract/change-runtime-owner.js';
+import { canonicalHash } from './native-canonical-hash.js';
 import { inspectNativeSdkRun } from './native-runtime-ownership.js';
-import { createNativeSdkChange } from './native-sdk-create.js';
-import { parseNativePortableState } from './native-portable-state.js';
-import { projectNativeSdkStatus } from './native-sdk-status.js';
 import type { CometProjectConfig } from './native-types.js';
-import {
-  assertNoArguments,
-  languageOption,
-  NativeUsageError,
-  requiredPositional,
-  success,
-  takeOption,
-  takeFlag,
-  type DispatchResult,
-} from './native-cli-shared.js';
 
 async function initializeNativeDeltaProposal(options: {
   paths: Awaited<ReturnType<typeof nativeProjectPaths>>;
   changeName: string;
   capability: string;
-}): Promise<{ specSource: string; deltaSource: string; baseHash: string }> {
+}): Promise<{ specSource: string; deltaSource: string }> {
   const canonical = await readNativeBoundedTextFile({
     root: options.paths.specsDir,
     ref: `${options.capability}/spec.md`,
@@ -82,20 +80,10 @@ async function initializeNativeDeltaProposal(options: {
   await atomicWriteText(path.join(changeRoot, ...specSource.split('/')), canonical.text, {
     containedRoot: options.paths.nativeRoot,
   });
-  const baseHash = nativeTotalSpecHash(canonical.text);
-  const inspected = inspectNativeTotalSpec(canonical.text);
   const delta: NativeDeltaDocument = {
     schema: 'comet.native.delta.v1',
     capability: options.capability,
-    base_hash: baseHash,
     base_version: 1,
-    legacy_hash: nativeLegacySectionHash(canonical.text),
-    base_requirements: Object.fromEntries(
-      inspected.requirements.map((requirement) => [
-        requirement.id,
-        nativeTotalSpecHash(requirement.raw),
-      ]),
-    ),
     operations: [],
   };
   await atomicWriteText(
@@ -103,7 +91,7 @@ async function initializeNativeDeltaProposal(options: {
     renderNativeDelta(delta),
     { containedRoot: options.paths.nativeRoot },
   );
-  return { specSource, deltaSource, baseHash };
+  return { specSource, deltaSource };
 }
 
 async function discoverNativeCapability(
@@ -221,7 +209,8 @@ export async function nativeNewCommand(
 ): Promise<DispatchResult> {
   const name = requiredPositional(args, 'change name');
   let config = await readProjectConfig(projectRoot);
-  const language = languageOption(args, config?.native.language ?? 'en');
+  const languageSpecified = args.includes('--language');
+  let language = languageOption(args, config?.native.language ?? 'en');
   const isolation = (takeOption(args, '--isolation') ?? 'current') as NativeWorkspaceIsolation;
   if (isolation !== 'current' && isolation !== 'branch' && isolation !== 'worktree') {
     throw new NativeUsageError('--isolation must be current, branch, or worktree');
@@ -232,9 +221,12 @@ export async function nativeNewCommand(
   const dryRun = takeFlag(args, '--dry-run');
   const planHash = takeOption(args, '--plan-hash');
   const setupFile = takeOption(args, '--setup');
-  const task = takeOption(args, '--task');
+  const setupReportFile = takeOption(args, '--setup-report');
+  if (setupReportFile !== undefined && (dryRun || isolation !== 'worktree'))
+    throw new NativeUsageError('--setup-report requires --isolation worktree without --dry-run');
+  let task = takeOption(args, '--task');
   if (task !== undefined && !task.trim()) throw new NativeUsageError('--task must not be empty');
-  const capability = takeOption(args, '--capability');
+  let capability = takeOption(args, '--capability');
   const runtimeFormat = takeOption(args, '--runtime') ?? 'sdk';
   if (runtimeFormat !== 'compat' && runtimeFormat !== 'sdk') {
     throw new NativeUsageError('--runtime must be compat or sdk');
@@ -249,15 +241,16 @@ export async function nativeNewCommand(
     await suggestNativeRepositoryRegistration(projectRoot, config, language);
   }
   let groupPlan;
+  let currentWorkspaceGroup;
   if (config?.repositories) {
     if (runtimeFormat !== 'sdk') throw new Error('Native workspace groups require --runtime sdk');
-    const currentGroup = await readNativeWorkspaceGroup(projectRoot);
-    if (!currentGroup && isolation === 'branch') {
+    currentWorkspaceGroup = await readNativeWorkspaceGroup(projectRoot);
+    if (!currentWorkspaceGroup && isolation === 'branch') {
       throw new NativeUsageError(
         'Native repository coordinators support --isolation current or worktree',
       );
     }
-    if (!currentGroup && isolation === 'worktree') {
+    if (!currentWorkspaceGroup && isolation === 'worktree') {
       if (changeBranch || targetBranch)
         throw new NativeUsageError(
           'Native repository groups do not accept --change-branch or --target-branch; configure target_branch for each repository',
@@ -265,8 +258,11 @@ export async function nativeNewCommand(
       const setup = setupFile
         ? await planNativeWorkspaceSetup(projectRoot, setupFile, config.repositories)
         : undefined;
+      const recorded = await readNativeWorkspaceGroupPlan(projectRoot, name);
+      if (setupReportFile !== undefined && !recorded?.setup?.checks.length)
+        throw new NativeUsageError('--setup-report requires an existing workspace setup request');
       groupPlan =
-        (await readNativeWorkspaceGroupPlan(projectRoot, name)) ??
+        recorded ??
         (await planNativeWorkspaceGroup({
           projectRoot,
           name,
@@ -277,6 +273,15 @@ export async function nativeNewCommand(
           ...(worktreePath ? { worktreePath } : {}),
           configuration: sourceConfig,
           ...(setup ? { setup } : {}),
+          ...(setup?.checks.length
+            ? {
+                creation: {
+                  language,
+                  ...(task === undefined ? {} : { task }),
+                  ...(capability === undefined ? {} : { capability }),
+                },
+              }
+            : {}),
         }));
       if (
         setup &&
@@ -297,16 +302,26 @@ export async function nativeNewCommand(
           { dryRun: true, plan: groupPlan },
           `Prepared Native workspace group plan ${groupPlan.hash}\n`,
         );
-    } else if (dryRun || planHash || setupFile)
+    } else if (dryRun || planHash || setupFile || setupReportFile !== undefined)
       throw new NativeUsageError(
-        currentGroup
+        currentWorkspaceGroup
           ? 'Use the coordinator root to inspect the workspace creation plan'
-          : '--dry-run, --plan-hash and --setup require --isolation worktree',
+          : '--dry-run, --plan-hash, --setup and --setup-report require --isolation worktree',
       );
-  } else if (dryRun || planHash || setupFile)
+  } else if (dryRun || planHash || setupFile || setupReportFile !== undefined)
     throw new NativeUsageError(
-      '--dry-run, --plan-hash and --setup require configured repositories',
+      '--dry-run, --plan-hash, --setup and --setup-report require configured repositories',
     );
+  const creation = groupPlan?.creation ?? currentWorkspaceGroup?.plan.creation;
+  if (creation) {
+    if (
+      (languageSpecified && language !== creation.language) ||
+      (task !== undefined && task !== creation.task) ||
+      (capability !== undefined && capability !== creation.capability)
+    )
+      throw new NativeUsageError('Native setup retry must use the original creation request');
+    ({ language, task, capability } = creation);
+  }
   const prepared = await prepareNativeWorkspace({
     projectRoot,
     name,
@@ -316,7 +331,51 @@ export async function nativeNewCommand(
     ...(worktreePath ? { worktreePath } : {}),
     sourceConfig,
     ...(groupPlan ? { groupPlan } : {}),
+    ...(setupReportFile !== undefined
+      ? { setupReport: await readNativeWorkspaceSetupReport(setupReportFile) }
+      : {}),
   });
+  const setup = prepared.preparation.setup;
+  if (setup?.status === 'awaiting-checks') {
+    const plan = prepared.preparation.group!;
+    const message =
+      language === 'zh-CN'
+        ? '在 Agent 平台按准备清单执行命令，再用 --setup-report 提交实际结果。'
+        : 'Run the workspace setup commands in the Agent platform, then submit actual results with --setup-report.';
+    const commandArgs = [
+      'comet',
+      'native',
+      'new',
+      name,
+      '--isolation',
+      'worktree',
+      '--project-root',
+      plan.coordinatorRoot,
+      ...(plan.creation
+        ? []
+        : [
+            '--language',
+            language,
+            ...(task === undefined ? [] : ['--task', task]),
+            ...(capability === undefined ? [] : ['--capability', capability]),
+          ]),
+      '--setup-report',
+      '<report.json>',
+      '--json',
+    ];
+    return {
+      ...success('new', {
+        change: name,
+        preparation: prepared.preparation,
+        next: { commandArgs, summary: message },
+      }),
+      envelope: {
+        summary: message,
+        next: { command: formatCliCommandArgs(commandArgs) },
+      },
+      executionCwd: prepared.projectRoot,
+    };
+  }
   projectRoot = prepared.projectRoot;
   if (runtimeFormat === 'compat') await assertChangeNotSdkOwned(projectRoot, 'native', name);
   config = await readProjectConfig(projectRoot);

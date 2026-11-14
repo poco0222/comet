@@ -1,0 +1,250 @@
+{
+  "cases": [
+    {
+      "id": "native-sdk-configured-input-exclusions",
+      "kind": "feature-removed",
+      "authorization": "report:2026-11-08-agent-managed-workflow-content",
+      "record": "docs/research/2026-11-14-fork-upstream-sync/regression-migration.zh.md",
+      "tests": [
+        {
+          "file": "test/domains/comet-native/native-workspace-group.test.ts",
+          "namePattern": "^Native workspace group creation inherits project input exclusions in Git members without refreshing excluded worktree files$",
+          "requiredNames": [
+            "Native workspace group creation inherits project input exclusions in Git members without refreshing excluded worktree files"
+          ]
+        },
+        {
+          "file": "test/domains/comet-native/native-workspace-group-delivery.test.ts",
+          "namePattern": "^Native workspace group Git delivery blocks changes to excluded tracked inputs before creating any delivery commit$",
+          "requiredNames": [
+            "Native workspace group Git delivery blocks changes to excluded tracked inputs before creating any delivery commit"
+          ]
+        },
+        {
+          "file": "test/app/update.test.ts",
+          "namePattern": "^update command helpers upgrades a beta17 Native project without leaving retired bundles or hiding config$",
+          "requiredNames": [
+            "update command helpers upgrades a beta17 Native project without leaving retired bundles or hiding config"
+          ]
+        },
+        {
+          "file": "test/domains/comet-native/native-workspace-group-delivery.test.ts",
+          "namePattern": "^(?:Native workspace group Git delivery rejects changed targets, task bytes and prepared integration bytes|Native workspace group Git delivery refreshes moved targets with fresh combined checks and retains the previous evidence)$",
+          "requiredNames": [
+            "Native workspace group Git delivery rejects changed targets, task bytes and prepared integration bytes",
+            "Native workspace group Git delivery refreshes moved targets with fresh combined checks and retains the previous evidence"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "native-codegraph-cache-input-drift",
+      "kind": "feature-removed",
+      "authorization": "report:2026-11-08-agent-managed-workflow-content",
+      "record": "docs/research/2026-11-14-fork-upstream-sync/regression-migration.zh.md",
+      "tests": [
+        {
+          "file": "test/domains/comet-native/native-agent-content-judgment.test.ts",
+          "namePattern": "^continues Native Verify and Archive through the generated Runtime without content proof$",
+          "requiredNames": [
+            "continues Native Verify and Archive through the generated Runtime without content proof"
+          ]
+        },
+        {
+          "file": "test/domains/comet-native/native-group-lifecycle.test.ts",
+          "namePattern": "^(?:creates two three-repository SDK tasks and delivers only the accepted archived candidate through the public CLI \\(source\\)|creates two three-repository SDK tasks and delivers only the accepted archived candidate through the public CLI \\(bundle\\))$",
+          "requiredNames": [
+            "creates two three-repository SDK tasks and delivers only the accepted archived candidate through the public CLI (source)",
+            "creates two three-repository SDK tasks and delivers only the accepted archived candidate through the public CLI (bundle)"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "native-task-result-retry-after-formal-review",
+      "kind": "feature-removed",
+      "authorization": "report:2026-11-08-agent-managed-workflow-content",
+      "record": "docs/research/2026-11-14-fork-upstream-sync/regression-migration.zh.md",
+      "tests": [
+        {
+          "file": "test/domains/comet-native/native-shape-incremental.test.ts",
+          "namePattern": "^Native Shape incremental contract continues a restored 0\\.5\\.0 Run with its original approval and Builder claim without content proof$",
+          "requiredNames": [
+            "Native Shape incremental contract continues a restored 0.5.0 Run with its original approval and Builder claim without content proof"
+          ]
+        },
+        {
+          "file": "test/domains/comet-native/native-agent-content-judgment.test.ts",
+          "namePattern": "^blocks Native Archive when a new real check fails after an accepted pass$",
+          "requiredNames": [
+            "blocks Native Archive when a new real check fails after an accepted pass"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "native-formal-review-restored-approved-bytes",
+      "kind": "feature-removed",
+      "authorization": "report:2026-11-08-agent-managed-workflow-content",
+      "record": "docs/research/2026-11-14-fork-upstream-sync/regression-migration.zh.md",
+      "tests": [
+        {
+          "file": "test/domains/comet-native/native-shape-incremental.test.ts",
+          "namePattern": "^Native Shape incremental contract preserves SDK ownership and its original projection after Agent-accepted formal edits$",
+          "requiredNames": [
+            "Native Shape incremental contract preserves SDK ownership and its original projection after Agent-accepted formal edits"
+          ]
+        },
+        {
+          "file": "test/domains/comet-native/native-shape-incremental.test.ts",
+          "namePattern": "^Native Shape incremental contract continues a restored 0\\.5\\.0 Run with its original approval and Builder claim without content proof$",
+          "requiredNames": [
+            "Native Shape incremental contract continues a restored 0.5.0 Run with its original approval and Builder claim without content proof"
+          ]
+        },
+        {
+          "file": "test/domains/comet-native/native-agent-content-judgment.test.ts",
+          "namePattern": "^blocks Native Archive when a new real check fails after an accepted pass$",
+          "requiredNames": [
+            "blocks Native Archive when a new real check fails after an accepted pass"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "native-verify-resume-after-input-exclusions-change",
+      "kind": "feature-removed",
+      "authorization": "report:2026-11-08-agent-managed-workflow-content",
+      "record": "docs/research/2026-11-14-fork-upstream-sync/regression-migration.zh.md",
+      "tests": [
+        {
+          "file": "test/app/workflow-content-proof-removal.test.ts",
+          "namePattern": "^rejects retired Native snapshot proof through the generated command bundle$",
+          "requiredNames": [
+            "rejects retired Native snapshot proof through the generated command bundle"
+          ]
+        },
+        {
+          "file": "test/domains/comet-native/native-agent-content-judgment.test.ts",
+          "namePattern": "^preserves an Agent-selected prior report for a repaired candidate and requires full new verification$",
+          "requiredNames": [
+            "preserves an Agent-selected prior report for a repaired candidate and requires full new verification"
+          ]
+        },
+        {
+          "file": "test/domains/comet-native/native-workspace-group-delivery.test.ts",
+          "namePattern": "^(?:Native workspace group Git delivery rejects changed targets, task bytes and prepared integration bytes|Native workspace group Git delivery refreshes moved targets with fresh combined checks and retains the previous evidence)$",
+          "requiredNames": [
+            "Native workspace group Git delivery rejects changed targets, task bytes and prepared integration bytes",
+            "Native workspace group Git delivery refreshes moved targets with fresh combined checks and retains the previous evidence"
+          ]
+        },
+        {
+          "file": "test/domains/comet-native/native-workspace-group-delivery.test.ts",
+          "namePattern": "^(?:Native workspace group Git delivery rejects missing, failed, stale or wrong-directory integration reports before updating targets|Native workspace group Git delivery migrates a partially applied v1 delivery without replaying Git writes or unknown checks)$",
+          "requiredNames": [
+            "Native workspace group Git delivery rejects missing, failed, stale or wrong-directory integration reports before updating targets",
+            "Native workspace group Git delivery migrates a partially applied v1 delivery without replaying Git writes or unknown checks"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "native-verify-ignore-checkpoint-temporary-file",
+      "kind": "feature-removed",
+      "authorization": "report:2026-11-08-agent-managed-workflow-content",
+      "record": "docs/research/2026-11-14-fork-upstream-sync/regression-migration.zh.md",
+      "tests": [
+        {
+          "file": "test/app/workflow-content-proof-removal.test.ts",
+          "namePattern": "^rejects retired Native snapshot proof through the generated command bundle$",
+          "requiredNames": [
+            "rejects retired Native snapshot proof through the generated command bundle"
+          ]
+        },
+        {
+          "file": "test/domains/comet-native/native-sdk-state-recovery.test.ts",
+          "namePattern": "^Native trusted checkpoint recovery restores Verify with its candidate, check evidence and pending Verifier unchanged$",
+          "requiredNames": [
+            "Native trusted checkpoint recovery restores Verify with its candidate, check evidence and pending Verifier unchanged"
+          ]
+        },
+        {
+          "file": "test/domains/comet-native/native-agent-content-judgment.test.ts",
+          "namePattern": "^continues Native Verify and Archive through the generated Runtime without content proof$",
+          "requiredNames": [
+            "continues Native Verify and Archive through the generated Runtime without content proof"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "native-successor-checks-after-checkpoint-recovery",
+      "kind": "feature-removed",
+      "authorization": "report:2026-11-08-agent-managed-workflow-content",
+      "record": "docs/research/2026-11-14-fork-upstream-sync/regression-migration.zh.md",
+      "tests": [
+        {
+          "file": "test/domains/comet-native/native-sdk-state-recovery.test.ts",
+          "namePattern": "^Native trusted checkpoint recovery restores Verify with its candidate, check evidence and pending Verifier unchanged$",
+          "requiredNames": [
+            "Native trusted checkpoint recovery restores Verify with its candidate, check evidence and pending Verifier unchanged"
+          ]
+        },
+        {
+          "file": "test/domains/comet-native/native-agent-content-judgment.test.ts",
+          "namePattern": "^preserves an Agent-selected prior report for a repaired candidate and requires full new verification$",
+          "requiredNames": [
+            "preserves an Agent-selected prior report for a repaired candidate and requires full new verification"
+          ]
+        },
+        {
+          "file": "test/domains/comet-native/native-sdk-verification-inputs.test.ts",
+          "namePattern": "^(?:Native Agent platform verification reports retains only the Agent-selected arbitrary check across a repaired candidate without language detection|Native Agent platform verification reports rejects a retired checker alias request without replaying a one-shot platform operation)$",
+          "requiredNames": [
+            "Native Agent platform verification reports retains only the Agent-selected arbitrary check across a repaired candidate without language detection",
+            "Native Agent platform verification reports rejects a retired checker alias request without replaying a one-shot platform operation"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "native-verify-ignore-codegraph-daemon-files",
+      "kind": "feature-removed",
+      "authorization": "report:2026-11-08-agent-managed-workflow-content",
+      "record": "docs/research/2026-11-14-fork-upstream-sync/regression-migration.zh.md",
+      "tests": [
+        {
+          "file": "test/app/workflow-content-proof-removal.test.ts",
+          "namePattern": "^rejects retired Native snapshot proof through the generated command bundle$",
+          "requiredNames": [
+            "rejects retired Native snapshot proof through the generated command bundle"
+          ]
+        },
+        {
+          "file": "test/domains/comet-native/native-agent-content-judgment.test.ts",
+          "namePattern": "^continues Native Verify and Archive through the generated Runtime without content proof$",
+          "requiredNames": [
+            "continues Native Verify and Archive through the generated Runtime without content proof"
+          ]
+        },
+        {
+          "file": "test/domains/comet-native/native-workspace-group-delivery.test.ts",
+          "namePattern": "^(?:Native workspace group Git delivery rejects changed targets, task bytes and prepared integration bytes|Native workspace group Git delivery refreshes moved targets with fresh combined checks and retains the previous evidence)$",
+          "requiredNames": [
+            "Native workspace group Git delivery rejects changed targets, task bytes and prepared integration bytes",
+            "Native workspace group Git delivery refreshes moved targets with fresh combined checks and retains the previous evidence"
+          ]
+        },
+        {
+          "file": "test/domains/comet-native/native-group-lifecycle.test.ts",
+          "namePattern": "^(?:creates two three-repository SDK tasks and delivers only the accepted archived candidate through the public CLI \\(source\\)|creates two three-repository SDK tasks and delivers only the accepted archived candidate through the public CLI \\(bundle\\))$",
+          "requiredNames": [
+            "creates two three-repository SDK tasks and delivers only the accepted archived candidate through the public CLI (source)",
+            "creates two three-repository SDK tasks and delivers only the accepted archived candidate through the public CLI (bundle)"
+          ]
+        }
+      ]
+    }
+  ]
+}

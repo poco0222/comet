@@ -1,0 +1,93 @@
+diff --git a/test/domains/comet-native/native-sdk-status-observation.test.ts b/test/domains/comet-native/native-sdk-status-observation.test.ts
+index f98b3fa7..7f342781 100644
+--- a/test/domains/comet-native/native-sdk-status-observation.test.ts
++++ b/test/domains/comet-native/native-sdk-status-observation.test.ts
+@@ -13,0 +14 @@ import { nativePortableStateFile } from '../../../domains/comet-native/native-po
++import { resolveWorkspaceRuntimeRootSync } from '../../../domains/workflow-contract/workspace-runtime.js';
+@@ -16 +17 @@ import { runNativeCli } from '../../../domains/comet-native/native-cli.js';
+-import { createLegacyNativeSdkChange } from '../../helpers/native-legacy-sdk-change.js';
++import { createNativeSdkTestChange } from '../../helpers/native-sdk-change.js';
+@@ -21 +21,0 @@ import {
+-import * as executions from '../../../domains/comet-native/native-sdk-check-execution.js';
+@@ -30 +30 @@ const roots: string[] = [];
+-it('rejects a valid but different portable body on compact current reads', async () => {
++it('reads SDK authority without reconciling a different portable checkpoint on ordinary reads', async () => {
+@@ -35 +35 @@ it('rejects a valid but different portable body on compact current reads', async
+-  await createLegacyNativeSdkChange(projectRoot, name);
++  await createNativeSdkTestChange(projectRoot, name);
+@@ -58 +58,2 @@ it('rejects a valid but different portable body on compact current reads', async
+-  await expect(readRuntimeProjection(store, name)).rejects.toThrow(/projection needs recovery/);
++  const after = await readRuntimeProjection(store, name);
++  expect(after.record).toEqual(authoritative);
+@@ -66 +67 @@ afterEach(async () => {
+-it('shares cancellation inspection only within one status projection and keeps independent continuations fresh', async () => {
++it('projects cancellation from business state and keeps independent continuations fresh', async () => {
+@@ -71 +72 @@ it('shares cancellation inspection only within one status projection and keeps i
+-  await createLegacyNativeSdkChange(projectRoot, name);
++  await createNativeSdkTestChange(projectRoot, name);
+@@ -74 +74,0 @@ it('shares cancellation inspection only within one status projection and keeps i
+-  const probe = vi.spyOn(executions, 'inspectNativeSdkCheckExecutions');
+@@ -90 +89,0 @@ it('shares cancellation inspection only within one status projection and keeps i
+-  expect(probe).toHaveBeenCalledTimes(1);
+@@ -94 +92,0 @@ it('shares cancellation inspection only within one status projection and keeps i
+-  expect(probe).toHaveBeenCalledTimes(2);
+@@ -105 +102,0 @@ it('shares cancellation inspection only within one status projection and keeps i
+-  expect(probe).toHaveBeenCalledTimes(3);
+@@ -110 +107 @@ it('shares cancellation inspection only within one status projection and keeps i
+-  expect(pathsProbe).toHaveBeenCalledTimes(1);
++  expect(pathsProbe).not.toHaveBeenCalled();
+@@ -116,3 +113,2 @@ it('shares cancellation inspection only within one status projection and keeps i
+-  await expect(inspectNativeSdkStatus({ projectRoot, name })).rejects.toThrow(/symbolic link/u);
+-
+-  // Projection-only input; no synthetic candidate is persisted or dispatched.
++  await expect(inspectNativeSdkStatus({ projectRoot, name })).resolves.toEqual(first);
++  expect(pathsProbe).not.toHaveBeenCalled();
+@@ -120,14 +116 @@ it('shares cancellation inspection only within one status projection and keeps i
+-    projectNativeSdkStatus(
+-      { projectRoot, name },
+-      {
+-        ...inspected,
+-        state: {
+-          ...inspected.state,
+-          phase: 'verify',
+-          shape_confirmation_hash: 'projection-only-shape',
+-          builder_handoff: { candidate_id: 'projection-only-candidate' } as NonNullable<
+-            typeof inspected.state.builder_handoff
+-          >,
+-        },
+-      },
+-    ),
++    nativePaths.nativeProjectPaths(projectRoot, 'docs', { readOnly: true }),
+@@ -134,0 +118,25 @@ it('shares cancellation inspection only within one status projection and keeps i
++
++  await fs.unlink(nativeRoot);
++  await fs.rename(movedRoot, nativeRoot);
++
++  const cleanupDirectory = path.join(
++    resolveWorkspaceRuntimeRootSync(projectRoot),
++    'native',
++    'group-delivery',
++  );
++  const foreignReceipts = path.join(projectRoot, 'foreign-receipts');
++  await fs.mkdir(path.dirname(cleanupDirectory), { recursive: true });
++  await fs.mkdir(foreignReceipts);
++  await fs.writeFile(path.join(foreignReceipts, 'cleanup.json'), '{}');
++  await fs.symlink(
++    foreignReceipts,
++    cleanupDirectory,
++    process.platform === 'win32' ? 'junction' : 'dir',
++  );
++  await expect(inspectNativeSdkStatus({ projectRoot, name })).rejects.toThrow(
++    /Native workspace cleanup record crosses .*group-delivery/u,
++  );
++  expect(await fs.readFile(path.join(foreignReceipts, 'cleanup.json'), 'utf8')).toBe('{}');
++  expect((await createNativeSdkRuntime(projectRoot).inspect(name)).revision).toBe(
++    inspected.run.revision,
++  );
+@@ -137 +145 @@ it('shares cancellation inspection only within one status projection and keeps i
+-it('keeps unresolved execution diagnostics read-only and shares one active-run observation', async () => {
++it('keeps unresolved Agent task diagnostics read-only', async () => {
+@@ -162 +169,0 @@ it('keeps unresolved execution diagnostics read-only and shares one active-run o
+-  const probe = vi.spyOn(executions, 'inspectNativeSdkCheckExecutions');
+@@ -164 +170,0 @@ it('keeps unresolved execution diagnostics read-only and shares one active-run o
+-  expect(probe).toHaveBeenCalledTimes(1);

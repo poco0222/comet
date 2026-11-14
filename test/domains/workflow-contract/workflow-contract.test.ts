@@ -379,12 +379,6 @@ describe('workflow contract normalization', () => {
       native: {
         artifact_root: 'docs/native',
         clarification_mode: 'batch',
-        snapshot: {
-          include: ['**/*.ts', 'packages/**'],
-          exclude: ['dist/**'],
-          max_files: 12_000,
-          max_duration_ms: 90_000,
-        },
       },
       classic: {
         artifact_layout: 'docs',
@@ -396,6 +390,8 @@ describe('workflow contract normalization', () => {
       owners: ['platform', 'workflow'],
       note: 'value: with # content',
     });
+    expect(parsed.config?.native).not.toHaveProperty('snapshot');
+    expect(parsed.value).toHaveProperty('native.snapshot.max_files', 12000);
   });
 
   it('normalizes repository-owned pull request finish providers and fails closed on invalid commands', () => {
@@ -451,14 +447,55 @@ describe('workflow contract normalization', () => {
     }
   });
 
-  it('keeps explicit input exclusions but omits legacy inclusion and budget fields', () => {
+  it('preserves registered repositories and only the legacy delivery exclusions on project updates', () => {
     const config = defaultWorkflowProjectConfig('docs');
-    expect(workflowProjectConfigManagedValue(config)).not.toHaveProperty('native.snapshot');
-    config.native.snapshot.exclude = ['legacy/generated/**'];
+    const merged = mergeWorkflowProjectConfigDocument(
+      {
+        native: {
+          snapshot: {
+            exclude: ['backend/generated/**', 'backend/generated/**'],
+            include: ['**/*'],
+            max_files: 100,
+          },
+        },
+      },
+      { ...config, repositories: [{ path: 'backend', target_branch: 'main' }] },
+    );
 
-    expect(workflowProjectConfigManagedValue(config)).toHaveProperty('native.snapshot', {
-      exclude: ['legacy/generated/**'],
+    expect(merged.repositories).toEqual([{ path: 'backend', target_branch: 'main' }]);
+    expect(merged).toHaveProperty('native.snapshot', { exclude: ['backend/generated/**'] });
+    const parsed = parseWorkflowProjectConfigDocument(JSON.stringify(merged)).config;
+    expect(parsed?.native).not.toHaveProperty('snapshot');
+    expect(parsed?.native?.legacyDeliveryExcludes).toEqual(['backend/generated/**']);
+    expect(workflowProjectConfigManagedValue(parsed!)).toHaveProperty('native.snapshot', {
+      exclude: ['backend/generated/**'],
     });
+    expect(() =>
+      mergeWorkflowProjectConfigDocument(
+        {},
+        {
+          ...config,
+          repositories: [{ path: 'docs/backend' }],
+        },
+      ),
+    ).toThrow('repositories paths must not overlap native.artifact_root');
+  });
+
+  it('rejects unsafe historical delivery exclusions before reading candidate paths', () => {
+    const config = defaultWorkflowProjectConfig('docs');
+    expect(() =>
+      mergeWorkflowProjectConfigDocument(
+        { native: { snapshot: { exclude: ['backend/../outside'] } } },
+        config,
+      ),
+    ).toThrow('native.snapshot.exclude contains an unsafe pattern');
+  });
+
+  it('ignores retired snapshot settings and removes them from managed writes', () => {
+    const config = defaultWorkflowProjectConfig('docs');
+    expect(config.native).not.toHaveProperty('snapshot');
+
+    expect(workflowProjectConfigManagedValue(config)).not.toHaveProperty('native.snapshot');
 
     const merged = mergeWorkflowProjectConfigDocument(
       {
@@ -469,7 +506,6 @@ describe('workflow contract normalization', () => {
           artifact_root: 'legacy-root',
           snapshot: {
             include: ['**/*'],
-            max_files: 500,
             snapshot_extension: 'remove-with-retired-block',
           },
           finish: {
@@ -481,7 +517,7 @@ describe('workflow contract normalization', () => {
       },
       config,
     );
-    expect(merged).toHaveProperty('native.snapshot', { exclude: ['legacy/generated/**'] });
+    expect(merged).not.toHaveProperty('native.snapshot');
     expect(merged).not.toHaveProperty('native.finish.pull_request');
     expect(merged).toHaveProperty('native.finish.future_provider', { enabled: true });
     expect(merged).toHaveProperty('native.custom_extension', 'keep');
@@ -490,7 +526,7 @@ describe('workflow contract normalization', () => {
     const parsed = parseWorkflowProjectConfigDocument(
       'schema: comet.project.v1\ndefault_workflow: native\nnative:\n  artifact_root: docs\n',
     );
-    expect(parsed.config?.native?.snapshot).toEqual(defaultWorkflowProjectConfig().native.snapshot);
+    expect(parsed.config?.native).not.toHaveProperty('snapshot');
   });
 
   it.each([
@@ -667,7 +703,7 @@ describe('workflow contract normalization', () => {
 
       await expect(
         writeWorkflowProjectConfig(projectRoot, defaultWorkflowProjectConfig('docs')),
-      ).rejects.toThrow(/symbolic link or junction|real directory/iu);
+      ).rejects.toThrow(/symbolic link, junction or invalid directory|real directory/iu);
       await expect(fs.access(path.join(outsideRoot, 'config.yaml'))).rejects.toMatchObject({
         code: 'ENOENT',
       });
@@ -709,7 +745,7 @@ describe('workflow contract normalization', () => {
 
       await expect(
         writeWorkflowProjectConfig(projectRoot, defaultWorkflowProjectConfig('docs')),
-      ).rejects.toThrow(/symbolic link or junction/iu);
+      ).rejects.toThrow(/symbolic link, junction or invalid directory|regular file/iu);
       await expect(fs.readFile(outsideConfig, 'utf8')).resolves.toBe('keep: true\n');
     } finally {
       await fs.rm(projectRoot, { recursive: true, force: true });
@@ -775,14 +811,14 @@ describe('workflow contract normalization', () => {
         ]),
       );
     } finally {
-      try {
-        const managedDirectory = path.join(projectRoot, '.comet');
-        if ((await fs.lstat(managedDirectory)).isSymbolicLink()) {
-          if (process.platform === 'win32') await fs.rmdir(managedDirectory);
-          else await fs.unlink(managedDirectory);
-        }
-      } catch (error) {
-        if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+      const managedDirectory = path.join(projectRoot, '.comet');
+      const stat = await fs.lstat(managedDirectory).catch((error: NodeJS.ErrnoException) => {
+        if (error.code !== 'ENOENT') throw error;
+        return null;
+      });
+      if (stat?.isSymbolicLink()) {
+        if (process.platform === 'win32') await fs.rmdir(managedDirectory);
+        else await fs.unlink(managedDirectory);
       }
       await fs.rm(projectRoot, { recursive: true, force: true });
       await fs.rm(outsideRoot, { recursive: true, force: true });
@@ -815,7 +851,7 @@ describe('workflow contract normalization', () => {
       }
 
       await expect(assertProjectConfigDocumentValid(projectRoot)).rejects.toThrow(
-        /symbolic link or junction/iu,
+        /symbolic link, junction or invalid directory|regular file/iu,
       );
     } finally {
       await fs.rm(projectRoot, { recursive: true, force: true });

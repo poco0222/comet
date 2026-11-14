@@ -1,3 +1,6 @@
+import path from 'node:path';
+import { readFileRaceSafe } from '../../platform/fs/race-safe-read.js';
+import { stripUtf8Bom } from '../../platform/fs/strip-bom.js';
 import {
   assertNoArguments,
   NativeUsageError,
@@ -8,8 +11,10 @@ import {
   type DispatchResult,
 } from './native-cli-shared.js';
 import { inspectNativeSdkRun, resolveNativeSdkCommandRoot } from './native-runtime-ownership.js';
-import { allCandidateCheckPlans } from './native-sdk-checks.js';
-import { assertNativeSdkArchivedCandidate } from './native-sdk-archive.js';
+import {
+  assertNativeWorkspaceDeliveryBinding,
+  readNativeWorkspaceDeliverySpecBinding,
+} from './native-workspace-delivery-binding.js';
 import {
   readNativeWorkspaceGroup,
   readNativeWorkspaceGroupPlan,
@@ -22,11 +27,16 @@ import { inspectNativeSdkStatus } from './native-sdk-status.js';
 import {
   applyNativeWorkspaceGroupDelivery,
   inspectNativeWorkspaceGroupDelivery,
+  nativeWorkspaceDeliveryReportTemplate,
   prepareNativeWorkspaceGroupDelivery,
+  reportNativeWorkspaceGroupDelivery,
   type NativeWorkspaceGroupDelivery,
 } from './native-workspace-group-delivery.js';
 import { validateNativeWorkspaceFinishMessage } from './native-workspace-finish.js';
-import { publishNativeWorkspaceGroupSpecs } from './native-workspace-group-specs.js';
+import {
+  assertNativeWorkspaceGroupSpecPublication,
+  publishNativeWorkspaceGroupSpecs,
+} from './native-workspace-group-specs.js';
 
 /** Git delivery follows the accepted SDK Run; it never supplies workflow decisions. */
 export async function nativeDeliverCommand(
@@ -36,14 +46,18 @@ export async function nativeDeliverCommand(
   const name = requiredPositional(args, 'change name');
   const apply = takeOption(args, '--apply');
   const cleanup = takeFlag(args, '--cleanup');
+  const reportFile = takeOption(args, '--checks');
   const refreshDeliveryId = takeOption(args, '--refresh');
-  const commitMessage = takeOption(args, '--commit-message') ?? `feat: ${name}`;
+  const commitMessage = takeOption(args, '--commit-message');
   assertNoArguments(args);
   if (apply && refreshDeliveryId)
     throw new NativeUsageError('--apply and --refresh cannot be combined');
   if (cleanup && refreshDeliveryId)
     throw new NativeUsageError('--cleanup and --refresh cannot be combined');
-  validateNativeWorkspaceFinishMessage(commitMessage, '--commit-message');
+  if (reportFile && (apply || cleanup || refreshDeliveryId))
+    throw new NativeUsageError('--checks submits results for an existing delivery');
+  if (commitMessage !== undefined)
+    validateNativeWorkspaceFinishMessage(commitMessage, '--commit-message');
   if (cleanup) {
     const plan = await readNativeWorkspaceGroupPlan(projectRoot, name);
     const root = plan?.projectRoot ?? projectRoot;
@@ -110,33 +124,93 @@ export async function nativeDeliverCommand(
   if (!group || group.plan.name !== name)
     throw new NativeUsageError('deliver requires a Native SDK multi-repository task');
   const { run, state, artifactRootRef } = await inspectNativeSdkRun(root, name, { readOnly: true });
+  const finalized = [...run.actions]
+    .reverse()
+    .find((action) => action.stepId === 'archive.finalize' && action.status === 'succeeded');
   if (
     run.status !== 'completed' ||
     !state.archived ||
     state.verification_result !== 'pass' ||
     !state.builder_handoff ||
+    state.workspace.group_hash !== group.plan.hash ||
+    state.verification?.candidate_id !== state.builder_handoff.candidate_id ||
     state.children_contract_hash ||
-    !run.actions.some(
-      (action) => action.stepId === 'archive.finalize' && action.status === 'succeeded',
-    )
+    !finalized?.outcome
   )
     throw new NativeUsageError(
       'Complete acceptance and Archive in the original SDK Run before Git delivery',
     );
-  await assertNativeSdkArchivedCandidate(run, root);
+  const checks = new Map(
+    (state.verification?.checks ?? []).map((check) => [
+      `verify:${check.id}`,
+      { id: `verify:${check.id}`, name: check.name.text },
+    ]),
+  );
+  for (const check of state.verification?.reported_checks ?? state.builder_handoff.checks) {
+    const name = check.name.text.trim();
+    const id = `verify:${name}`;
+    if (name && !checks.has(id)) checks.set(id, { id, name });
+  }
+  let expectedSpecs: ReturnType<typeof readNativeWorkspaceDeliverySpecBinding>;
   let delivery: NativeWorkspaceGroupDelivery;
   try {
-    delivery = apply
-      ? await applyNativeWorkspaceGroupDelivery(group, apply)
-      : await prepareNativeWorkspaceGroupDelivery({
-          group,
-          candidateId: state.builder_handoff.candidate_id,
-          commitMessage,
-          checks: allCandidateCheckPlans(run),
-          artifactRootRef,
-          refreshDeliveryId,
-          validateCandidate: () => assertNativeSdkArchivedCandidate(run, root),
-        });
+    const existing = await inspectNativeWorkspaceGroupDelivery(group);
+    if (existing && existing.candidateId !== state.builder_handoff.candidate_id)
+      throw new Error('Delivery belongs to another accepted candidate');
+    expectedSpecs = readNativeWorkspaceDeliverySpecBinding(run);
+    const legacySpecs = (
+      finalized.outcome.output as {
+        specs?: Array<{ capability?: string; resultHash?: string | null }>;
+      } | null
+    )?.specs;
+    if (
+      !expectedSpecs &&
+      Array.isArray(legacySpecs) &&
+      legacySpecs.length === state.spec_changes.length &&
+      legacySpecs.every((spec, index) => {
+        const change = state.spec_changes[index];
+        return (
+          spec?.capability === change.capability &&
+          (change.operation === 'remove'
+            ? spec.resultHash === null
+            : typeof spec.resultHash === 'string' && /^[a-f0-9]{64}$/u.test(spec.resultHash))
+        );
+      })
+    ) {
+      expectedSpecs = legacySpecs.map(({ capability, resultHash }) => ({
+        ref: `specs/${capability}/spec.md`,
+        hash: resultHash!,
+      }));
+    }
+    if (!existing || existing.status !== 'merged') {
+      if (!expectedSpecs && state.spec_changes.length)
+        throw new Error('Original Archive lacks accepted Spec publication evidence');
+      if (expectedSpecs)
+        await assertNativeWorkspaceGroupSpecPublication(group, artifactRootRef, expectedSpecs);
+    }
+    if (apply) {
+      delivery = await applyNativeWorkspaceGroupDelivery(group, apply);
+    } else if (reportFile) {
+      const { bytes } = await readFileRaceSafe(
+        path.resolve(projectRoot, reportFile),
+        Number.MAX_SAFE_INTEGER,
+        { label: 'Native integration check report' },
+      );
+      delivery = await reportNativeWorkspaceGroupDelivery(
+        group,
+        JSON.parse(stripUtf8Bom(bytes.toString('utf8'))),
+      );
+    } else {
+      delivery = await prepareNativeWorkspaceGroupDelivery({
+        group,
+        candidateId: state.builder_handoff.candidate_id,
+        commitMessage: commitMessage ?? existing?.commitMessage ?? `feat: ${name}`,
+        checks: [...checks.values()],
+        artifactRootRef,
+        refreshDeliveryId,
+        validateCandidate: () => assertNativeWorkspaceDeliveryBinding(run, group),
+      });
+    }
   } catch (error) {
     const saved = await inspectNativeWorkspaceGroupDelivery(group).catch(() => null);
     const prefix = ['comet', 'native', 'deliver', name];
@@ -150,11 +224,12 @@ export async function nativeDeliverCommand(
           ...prefix,
           ...(apply
             ? ['--apply', apply]
-            : [
-                '--commit-message',
-                commitMessage,
-                ...(refreshDeliveryId ? ['--refresh', refreshDeliveryId] : []),
-              ]),
+            : reportFile
+              ? ['--checks', path.resolve(projectRoot, reportFile)]
+              : [
+                  ...(commitMessage ? ['--commit-message', commitMessage] : []),
+                  ...(refreshDeliveryId ? ['--refresh', refreshDeliveryId] : []),
+                ]),
           ...suffix,
         ],
         refresh:
@@ -170,8 +245,8 @@ export async function nativeDeliverCommand(
                 ],
                 preconditions: [
                   'Keep the accepted task candidate unchanged.',
-                  'Resolve dirty target work and confirm any recorded check processes have stopped.',
-                  'A new integration round reruns its checks and preserves the old worktrees.',
+                  'Resolve dirty target work and reconcile any unknown previous check before running a replacement.',
+                  'Run fresh checks for the new integration round. The old worktrees and evidence are preserved.',
                 ],
               }
             : null,
@@ -188,6 +263,7 @@ export async function nativeDeliverCommand(
         artifactRootRef,
         specChanges: state.spec_changes,
         deliveryId: delivery.id,
+        expectedSpecs,
       });
     } catch (error) {
       const message = `Git targets are merged; shared Specs publication is blocked. ${error instanceof Error ? error.message : String(error)}`;
@@ -214,6 +290,8 @@ export async function nativeDeliverCommand(
       };
     }
   }
+  const reportTemplate =
+    delivery.status === 'awaiting-checks' ? nativeWorkspaceDeliveryReportTemplate(delivery) : null;
   return {
     ...success(
       'deliver',
@@ -225,24 +303,44 @@ export async function nativeDeliverCommand(
         next:
           delivery.status === 'merged'
             ? null
-            : {
-                commandArgs: [
-                  'comet',
-                  'native',
-                  'deliver',
-                  name,
-                  '--apply',
-                  delivery.planHash!,
-                  '--project-root',
-                  root,
-                  '--json',
-                ],
-                summary: 'Apply the verified integration commits to their local target branches.',
-              },
+            : reportTemplate
+              ? {
+                  cwd: delivery.integrationRoot,
+                  resultTemplate: reportTemplate,
+                  commandArgs: [
+                    'comet',
+                    'native',
+                    'deliver',
+                    name,
+                    '--checks',
+                    '<checks-json-file>',
+                    '--project-root',
+                    root,
+                    '--json',
+                  ],
+                  summary:
+                    'Run the required checks with Agent platform tools in the prepared integration workspace and submit the actual results.',
+                }
+              : {
+                  commandArgs: [
+                    'comet',
+                    'native',
+                    'deliver',
+                    name,
+                    '--apply',
+                    delivery.planHash!,
+                    '--project-root',
+                    root,
+                    '--json',
+                  ],
+                  summary: 'Apply the verified integration commits to their local target branches.',
+                },
       },
       delivery.status === 'merged'
         ? `Merged ${name} into all local target branches; task and integration worktrees are retained.\n`
-        : `Prepared and checked ${name}; target branches have not been updated.\n`,
+        : reportTemplate
+          ? `Prepared ${name} for integration checks.\n`
+          : `Prepared and checked ${name}; target branches have not been updated.\n`,
     ),
     executionCwd: root,
   };

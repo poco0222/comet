@@ -1,23 +1,27 @@
 import { promises as fs } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { spawn, spawnSync } from 'node:child_process';
-import { once } from 'node:events';
+import { spawnSync } from 'node:child_process';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import { runGitCommand } from '../../../platform/process/git.js';
 import { runNativeCliDetailed } from '../../../domains/comet-native/native-cli.js';
-import { nativeRawInputSnapshot } from '../../../domains/comet-native/native-portable-checks.js';
+import { inspectNativeSdkRun } from '../../../domains/comet-native/native-runtime-ownership.js';
+import {
+  captureNativeWorkspaceDeliveryRootFiles,
+  captureNativeWorkspaceDeliveryTrees,
+} from '../../../domains/comet-native/native-workspace-delivery-binding.js';
 import {
   defaultProjectConfig,
+  readProjectConfig,
   writeProjectConfig,
 } from '../../../domains/comet-native/native-config.js';
 import { resolveWorkspaceRuntimeLocation } from '../../../platform/paths/workspace-runtime.js';
-import { readProcessIdentity } from '../../../platform/process/process-identity.js';
 import {
   assertNativeWorkspaceGroupCurrent,
   createNativeWorkspaceGroup,
   planNativeWorkspaceGroup,
+  readNativeWorkspaceGroup,
 } from '../../../domains/comet-native/native-workspace-group.js';
 
 describe('Native workspace group creation', () => {
@@ -175,7 +179,11 @@ describe('Native workspace group creation', () => {
     runGitCommand(backend, ['add', filename, '.gitattributes']);
     runGitCommand(backend, ['commit', '-m', 'tracked fixture']);
     const config = defaultProjectConfig();
-    config.native.snapshot.exclude = ['backend/**/application-prod.yml'];
+    config.native.legacyDeliveryExcludes = [
+      'backend/**/application-prod.yml',
+      'backend/private/*',
+      'backend/[local].txt',
+    ];
     await writeProjectConfig(projectRoot, { ...config, repositories });
     const created = await runNativeCliDetailed([
       'new',
@@ -201,16 +209,28 @@ describe('Native workspace group creation', () => {
       `"${process.execPath.replaceAll('\\', '/')}" "${script.replaceAll('\\', '/')}"`,
     ]);
     await fs.writeFile(path.join(member, filename), 'fixture: two\n');
-    const before = await nativeRawInputSnapshot({ projectRoot: task });
-    expect(before.complete, before.diagnostics.join('; ')).toBe(true);
-    expect(before.files.map((file) => file.path)).not.toContain(`backend/${filename}`);
-    expect(before.files.map((file) => file.path)).toContain('backend/source.txt');
+    expect((await readProjectConfig(task))?.native.legacyDeliveryExcludes).toEqual(
+      expect.arrayContaining([
+        'backend/**/application-prod.yml',
+        'backend/private/*',
+        'backend/[local].txt',
+      ]),
+    );
+    await fs.mkdir(path.join(member, 'private'));
+    await fs.writeFile(path.join(member, 'private/.local-secret'), 'local only');
+    await fs.writeFile(path.join(member, '[local].txt'), 'local only');
+    const group = (await readNativeWorkspaceGroup(task))!;
+    const trees = await captureNativeWorkspaceDeliveryTrees(group);
+    expect(trees[0].tree).toBe(runGitCommand(member, ['rev-parse', 'HEAD^{tree}']));
     await expect(fs.stat(marker)).rejects.toMatchObject({ code: 'ENOENT' });
-    await fs.writeFile(path.join(member, filename), 'fixture: six\n');
-    const after = await nativeRawInputSnapshot({ projectRoot: task, previous: before });
-    expect(after.complete, after.diagnostics.join('; ')).toBe(true);
-    expect(after.contentHash).toBe(before.contentHash);
-    await expect(fs.stat(marker)).rejects.toMatchObject({ code: 'ENOENT' });
+    runGitCommand(member, ['add', 'private/.local-secret']);
+    runGitCommand(member, ['commit', '-m', 'historical excluded fixture']);
+    runGitCommand(member, ['rm', 'private/.local-secret']);
+    runGitCommand(member, ['commit', '-m', 'revert historical fixture path']);
+    await expect(captureNativeWorkspaceDeliveryTrees(group)).rejects.toThrow(
+      'private/.local-secret',
+    );
+    expect(await fs.readFile(path.join(member, filename), 'utf8')).toBe('fixture: two\n');
   });
 
   it('preflights explicit local setup without copying secrets and binds copied ignored inputs', async () => {
@@ -252,34 +272,68 @@ describe('Native workspace group creation', () => {
         '--json',
         ...args,
       ]);
-    const preview = await cli('--setup', setupFile, '--dry-run');
+    const preview = await cli(
+      '--setup',
+      setupFile,
+      '--task',
+      'Prepare isolated dependencies',
+      '--dry-run',
+    );
     expect(preview.output.exitCode, preview.output.stdout).toBe(0);
     expect(preview.output.stdout).not.toContain('fixture-private-value');
     const plan = JSON.parse(preview.output.stdout).data.plan;
     await expect(fs.stat(plan.projectRoot)).rejects.toMatchObject({ code: 'ENOENT' });
-    const created = await cli('--setup', setupFile, '--plan-hash', plan.hash);
-    expect(created.output.exitCode, created.output.stdout).toBe(0);
-    const task = created.dispatch.executionCwd!;
+    const preparing = await cli(
+      '--setup',
+      setupFile,
+      '--task',
+      'Prepare isolated dependencies',
+      '--plan-hash',
+      plan.hash,
+    );
+    expect(preparing.output.exitCode, preparing.output.stdout).toBe(0);
+    const task = preparing.dispatch.executionCwd!;
     expect(await fs.readFile(path.join(task, 'backend/.env'), 'utf8')).toBe(
       'fixture-private-value',
     );
+    expect(preparing.output.stdout).not.toContain('fixture-private-value');
+    await expect(fs.stat(path.join(task, 'backend/node_modules/ready'))).rejects.toMatchObject({
+      code: 'ENOENT',
+    });
+    await expect(fs.stat(path.join(task, 'docs/comet/changes/local-setup'))).rejects.toMatchObject({
+      code: 'ENOENT',
+    });
+    const setup = JSON.parse(preparing.output.stdout).data.preparation.setup;
+    expect(setup.status).toBe('awaiting-checks');
+    const check = setup.checks[0];
+    expect(check.cwd).toBe(path.join(task, 'backend'));
+    const execution = spawnSync(check.executable, check.argv, { cwd: check.cwd });
+    expect(execution.status, execution.stderr?.toString()).toBe(0);
+    const report = path.join(temporary, 'setup-report.json');
+    await fs.writeFile(
+      report,
+      JSON.stringify({
+        id: setup.id,
+        workspaceId: setup.workspaceId,
+        checks: [{ id: check.id, cwd: check.cwd, result: 'passed' }],
+      }),
+    );
+    const changed = await cli('--task', 'Replace the original request', '--setup-report', report);
+    expect(changed.output.exitCode).not.toBe(0);
+    expect(changed.output.stdout + changed.output.stderr).toContain('original creation request');
+    const created = await cli('--setup-report', report);
+    expect(created.output.exitCode, created.output.stdout).toBe(0);
+    expect(JSON.parse(created.output.stdout).data.preparation.setup.status).toBe('ready');
+    const { run } = await inspectNativeSdkRun(task, 'local-setup', { readOnly: true });
+    expect(run.input).toMatchObject({ task: 'Prepare isolated dependencies' });
     expect(await fs.readFile(path.join(task, 'backend/node_modules/ready'), 'utf8')).toBe('ok');
     expect(runGitCommand(path.join(task, 'backend'), ['status', '--porcelain'])).toBe('');
-    const before = await nativeRawInputSnapshot({ projectRoot: task });
-    expect(before.complete, before.diagnostics.join('; ')).toBe(true);
-    expect(before.files.map((file) => file.path)).toContain('backend/.env');
     await fs.writeFile(path.join(task, 'backend/.env'), 'task-owned-config');
-    expect((await nativeRawInputSnapshot({ projectRoot: task })).contentHash).not.toBe(
-      before.contentHash,
-    );
     const resumed = await cli();
     expect(resumed.output.exitCode, resumed.output.stdout).toBe(0);
     expect(await fs.readFile(path.join(task, 'backend/.env'), 'utf8')).toBe('task-owned-config');
     expect(await fs.readFile(path.join(backend, '.env'), 'utf8')).toBe('fixture-private-value');
     await fs.unlink(path.join(task, 'backend/.env'));
-    const missing = await nativeRawInputSnapshot({ projectRoot: task });
-    expect(missing.complete).toBe(false);
-    expect(missing.diagnostics.join('; ')).toContain('.env');
     const unavailable = await cli();
     expect(unavailable.output.exitCode).not.toBe(0);
     expect(unavailable.output.stdout + unavailable.output.stderr).toContain(
@@ -326,55 +380,103 @@ describe('Native workspace group creation', () => {
         '--json',
         ...args,
       ]);
-    const failed = await invoke('--setup', setupFile);
-    expect(failed.output.exitCode).not.toBe(0);
-    expect(failed.output.stdout + failed.output.stderr).toContain('Workspace setup failed');
-    const task = path.join(temporary, 'project-worktrees/retry-setup');
+    const pending = await invoke('--setup', setupFile);
+    expect(pending.output.exitCode, pending.output.stdout).toBe(0);
+    const task = pending.dispatch.executionCwd!;
+    const setup = JSON.parse(pending.output.stdout).data.preparation.setup;
+    const check = setup.checks[0];
+    const report = path.join(temporary, 'setup-report.json');
+    const submit = async (id: string, result: string, note?: string, cwd = check.cwd) => {
+      await fs.writeFile(
+        report,
+        JSON.stringify({
+          id,
+          workspaceId: setup.workspaceId,
+          checks: [{ id: check.id, cwd, result, note }],
+        }),
+      );
+      return invoke('--setup-report', report);
+    };
     const runtimeRoot = resolveWorkspaceRuntimeLocation(task).runtimeRoot;
     const setupDirectory = path.join(runtimeRoot, 'workspace-setup');
     const receiptFile = path.join(setupDirectory, (await fs.readdir(setupDirectory))[0]);
-    const original = await fs.readFile(receiptFile, 'utf8');
-    const interrupted = JSON.parse(original);
-    interrupted.attempts[0].result = null;
-    const running = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], {
-      detached: process.platform !== 'win32',
-      stdio: 'ignore',
+    const receipt = JSON.parse(await fs.readFile(receiptFile, 'utf8'));
+    const legacyAttempt = {
+      id: check.id,
+      operationId: 'f117cb2e-18df-4d47-b903-ae7de8de7275',
+      process: { pid: process.pid },
+      result: null,
+    };
+    receipt.attempts.push(legacyAttempt);
+    await fs.writeFile(receiptFile, JSON.stringify(receipt));
+    const reconciling = await invoke();
+    expect(
+      JSON.parse(reconciling.output.stdout).data.preparation.setup.checks[0].reconcile,
+    ).toContain(legacyAttempt.operationId);
+    await expect(fs.stat(path.join(task, 'backend/node_modules/attempt'))).rejects.toMatchObject({
+      code: 'ENOENT',
     });
-    await once(running, 'spawn');
-    try {
-      interrupted.attempts[0].process = {
-        pid: running.pid!,
-        identity: (await readProcessIdentity(running.pid!)) ?? undefined,
-      };
-      await fs.writeFile(receiptFile, JSON.stringify(interrupted));
-      const live = await invoke();
-      expect(live.output.exitCode).not.toBe(0);
-      expect(live.output.stdout + live.output.stderr).toContain('may still be running');
-    } finally {
-      const exited = once(running, 'exit');
-      running.kill();
-      await exited;
-    }
-    interrupted.attempts[0].process.pid = 'invalid';
-    await fs.writeFile(receiptFile, JSON.stringify(interrupted));
+    const unconfirmed = await submit(setup.id, 'passed');
+    expect(unconfirmed.output.exitCode).not.toBe(0);
+    expect(unconfirmed.output.stdout + unconfirmed.output.stderr).toContain(
+      'Reconcile the original setup execution',
+    );
+    legacyAttempt.process.pid = -1;
+    await fs.writeFile(receiptFile, JSON.stringify(receipt));
     const corrupt = await invoke();
     expect(corrupt.output.exitCode).not.toBe(0);
     expect(corrupt.output.stdout + corrupt.output.stderr).toContain(
       'Workspace setup receipt changed',
     );
-    await fs.writeFile(receiptFile, original);
+    legacyAttempt.process.pid = process.pid;
+    await fs.writeFile(receiptFile, JSON.stringify(receipt));
+    expect(spawnSync(check.executable, check.argv, { cwd: check.cwd }).status).toBe(1);
+    const wrongCwd = await submit(setup.id, 'passed', 'Previous attempt ended', backend);
+    expect(wrongCwd.output.exitCode).not.toBe(0);
+    const failed = await submit(
+      setup.id,
+      'failed',
+      'Previous attempt ended; the external retry failed',
+    );
+    expect(failed.output.exitCode, failed.output.stdout).toBe(0);
+    const retry = JSON.parse(failed.output.stdout).data.preparation.setup;
+    expect(retry.status).toBe('awaiting-checks');
+    expect(retry.id).not.toBe(setup.id);
+    await expect(fs.stat(path.join(task, 'docs/comet/changes/retry-setup'))).rejects.toMatchObject({
+      code: 'ENOENT',
+    });
+    const stale = await submit(setup.id, 'passed', 'Old request');
+    expect(stale.output.exitCode).not.toBe(0);
+    expect(stale.output.stdout + stale.output.stderr).toContain(
+      'does not match the current request',
+    );
+
     await fs.writeFile(path.join(task, 'backend/.env'), 'keep user edit');
-    const resumed = await invoke();
+    expect(spawnSync(check.executable, check.argv, { cwd: check.cwd }).status).toBe(0);
+    const resumed = await submit(
+      retry.id,
+      'passed',
+      'Original execution reconciled and retry passed',
+    );
     expect(resumed.output.exitCode, resumed.output.stdout).toBe(0);
     expect(await fs.readFile(path.join(task, 'backend/.env'), 'utf8')).toBe('keep user edit');
     const completed = JSON.parse(await fs.readFile(receiptFile, 'utf8'));
-    await fs.appendFile(
-      path.join(runtimeRoot, completed.attempts.at(-1).result.logRef),
-      'changed log',
+    expect(completed.attempts).toEqual([legacyAttempt]);
+    const duplicate = await submit(
+      retry.id,
+      'passed',
+      'Original execution reconciled and retry passed',
     );
-    const stale = await invoke();
-    expect(stale.output.exitCode).not.toBe(0);
-    expect(stale.output.stdout + stale.output.stderr).toContain('Workspace setup log changed');
+    expect(duplicate.output.exitCode, duplicate.output.stdout).toBe(0);
+    expect(JSON.parse(await fs.readFile(receiptFile, 'utf8'))).toEqual(completed);
+    expect(completed.reports.at(-1).checks).toEqual([
+      {
+        id: check.id,
+        cwd: check.cwd,
+        result: 'passed',
+        note: 'Original execution reconciled and retry passed',
+      },
+    ]);
   });
 
   it('rejects unsafe local setup and stale local-file hashes before creating worktrees', async () => {
@@ -676,6 +778,20 @@ describe('Native workspace group creation', () => {
         ],
       },
     });
+    const shown = await invoke('show', 'cli-a');
+    expect(shown.output.exitCode, shown.output.stdout).toBe(0);
+    expect(shown.dispatch.executionCwd).toBe(plan.projectRoot);
+    const selected = await invoke('select', 'cli-a', '--session', 'coordinator-session');
+    expect(selected.output.exitCode, selected.output.stdout).toBe(0);
+    expect(selected.dispatch.executionCwd).toBe(plan.projectRoot);
+    expect(
+      JSON.parse(
+        await fs.readFile(path.join(plan.projectRoot, '.comet/current-change.json'), 'utf8'),
+      ),
+    ).toMatchObject({ workflow: 'native', change: 'cli-a' });
+    await expect(
+      fs.stat(path.join(projectRoot, '.comet', 'current-change.json')),
+    ).rejects.toMatchObject({ code: 'ENOENT' });
     const listing = await invoke('status');
     expect(listing.output.exitCode, listing.output.stdout).toBe(0);
     expect(listing.dispatch.data).toMatchObject({ total: 2 });
@@ -801,55 +917,44 @@ describe('Native workspace group creation', () => {
     const group = await createNativeWorkspaceGroup(
       await planNativeWorkspaceGroup({ projectRoot, name: 'candidate', repositories }),
     );
-    let previous = await nativeRawInputSnapshot({ projectRoot: group.plan.projectRoot });
-    expect(previous.complete, previous.diagnostics.join('\n')).toBe(true);
-    expect(previous.repositories?.map((entry) => entry.path)).toEqual([
-      'backend',
-      'frontend',
-      'mobile',
-    ]);
+    let previous = await captureNativeWorkspaceDeliveryTrees(group);
+    expect(previous.map(({ path }) => path).sort()).toEqual(['backend', 'frontend', 'mobile']);
     for (const entry of group.plan.repositories) {
-      expect(previous.files.some((file) => file.path === `${entry.path}/source.txt`)).toBe(true);
       await fs.writeFile(path.join(entry.worktreeRoot, 'source.txt'), 'changed\n');
-      const next = await nativeRawInputSnapshot({ projectRoot: group.plan.projectRoot, previous });
-      expect(next.complete, next.diagnostics.join('\n')).toBe(true);
-      expect(next.contentHash).not.toBe(previous.contentHash);
+      const next = await captureNativeWorkspaceDeliveryTrees(group);
+      expect(next.find(({ path }) => path === entry.path)?.tree).not.toBe(
+        previous.find(({ path }) => path === entry.path)?.tree,
+      );
+      expect(runGitCommand(entry.worktreeRoot, ['diff', '--cached', '--name-only'])).toBe('');
       previous = next;
     }
     await fs.rename(
       group.plan.repositories[2].worktreeRoot,
       `${group.plan.repositories[2].worktreeRoot}-missing`,
     );
-    await expect(
-      nativeRawInputSnapshot({ projectRoot: group.plan.projectRoot, previous }),
-    ).rejects.toThrow();
+    await expect(captureNativeWorkspaceDeliveryTrees(group)).rejects.toThrow();
   });
 
   it('keeps Runtime-owned artifacts out of child candidate inputs with a nested artifact root', async () => {
     const group = await createNativeWorkspaceGroup(
       await planNativeWorkspaceGroup({ projectRoot, name: 'nested-artifacts', repositories }),
     );
-    const managedArtifactRoot = path.join(group.plan.projectRoot, 'backend/docs');
+    const taskRoot = group.plan.projectRoot;
+    const managedArtifactRoot = path.join(taskRoot, 'docs/custom');
+    await writeProjectConfig(taskRoot, { ...defaultProjectConfig('docs/custom'), repositories });
     const change = path.join(managedArtifactRoot, 'comet/changes/nested-artifacts');
     await fs.mkdir(change, { recursive: true });
     await fs.writeFile(path.join(change, 'comet-state.yaml'), 'runtime projection one\n');
     await fs.writeFile(path.join(change, 'brief.md'), '# Original contract\n');
-    const first = await nativeRawInputSnapshot({
-      projectRoot: group.plan.projectRoot,
-      managedArtifactRoot,
-    });
-    expect(first.complete, first.diagnostics.join('\n')).toBe(true);
-    expect(first.files.some((file) => file.path.endsWith('comet-state.yaml'))).toBe(false);
+    const rootFile = path.join(taskRoot, 'test-setup.cjs');
+    await fs.writeFile(rootFile, 'const source = 1;\n');
+    const first = await captureNativeWorkspaceDeliveryRootFiles(group);
+    expect(first.map(({ path }) => path)).toContain('test-setup.cjs');
+    expect(first.some(({ path }) => path.includes('/comet/'))).toBe(false);
     await fs.writeFile(path.join(change, 'comet-state.yaml'), 'runtime projection two\n');
-    const second = await nativeRawInputSnapshot({
-      projectRoot: group.plan.projectRoot,
-      managedArtifactRoot,
-    });
-    expect(second.contentHash).toBe(first.contentHash);
     await fs.writeFile(path.join(change, 'brief.md'), '# Changed contract\n');
-    expect(
-      (await nativeRawInputSnapshot({ projectRoot: group.plan.projectRoot, managedArtifactRoot }))
-        .contentHash,
-    ).not.toBe(first.contentHash);
+    expect(await captureNativeWorkspaceDeliveryRootFiles(group)).toEqual(first);
+    await fs.writeFile(rootFile, 'const source = 2;\n');
+    expect(await captureNativeWorkspaceDeliveryRootFiles(group)).not.toEqual(first);
   });
 });

@@ -1,4 +1,5 @@
 import { promises as fs } from 'node:fs';
+import { withRecoverableFileLock } from '../../platform/fs/recoverable-file-lock.js';
 import path from 'node:path';
 
 import {
@@ -13,7 +14,6 @@ import {
 } from '../../platform/process/git.js';
 import { atomicWriteJson } from './native-atomic-file.js';
 import { canonicalHash } from './native-canonical-hash.js';
-import { withNativeLockRecovery } from './native-lock.js';
 import { nativeProjectPaths, resolveContainedNativePath } from './native-paths.js';
 import {
   registerWorkspaceGroup,
@@ -44,6 +44,12 @@ export interface NativeRepositoryPlan {
   worktreeRoot: string;
 }
 
+interface NativeWorkspaceGroupCreation {
+  language: 'en' | 'zh-CN';
+  task?: string;
+  capability?: string;
+}
+
 export interface NativeWorkspaceGroupPlan {
   schema: 'comet.native.workspace-group-plan.v1';
   coordinatorRoot: string;
@@ -53,6 +59,7 @@ export interface NativeWorkspaceGroupPlan {
   repositories: NativeRepositoryPlan[];
   configurationHash: string | null;
   setup?: NativeWorkspaceSetup;
+  creation?: NativeWorkspaceGroupCreation;
   hash: string;
 }
 
@@ -179,6 +186,7 @@ export async function planNativeWorkspaceGroup(options: {
   worktreePath?: string;
   configuration?: unknown;
   setup?: NativeWorkspaceSetup;
+  creation?: NativeWorkspaceGroupCreation;
 }): Promise<NativeWorkspaceGroupPlan> {
   if (!/^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$/u.test(options.name))
     throw new Error('Invalid Native change name');
@@ -247,6 +255,7 @@ export async function planNativeWorkspaceGroup(options: {
     projectRoot,
     repositories,
     ...(options.setup ? { setup: options.setup } : {}),
+    ...(options.creation ? { creation: options.creation } : {}),
     configurationHash:
       options.configuration === undefined
         ? null
@@ -266,6 +275,14 @@ async function validatePlan(plan: NativeWorkspaceGroupPlan): Promise<void> {
   )
     throw new Error('Invalid Native workspace group plan');
   if (plan.setup) validateNativeWorkspaceSetup(plan.setup, plan.repositories);
+  if (
+    plan.creation !== undefined &&
+    (!['en', 'zh-CN'].includes(plan.creation.language) ||
+      [plan.creation.task, plan.creation.capability].some(
+        (value) => value !== undefined && typeof value !== 'string',
+      ))
+  )
+    throw new Error('Invalid Native workspace group creation request');
   const coordinator = resolveWorkspaceIdentity(plan.coordinatorRoot);
   if (
     coordinator.projectRoot !== plan.coordinatorRoot ||
@@ -454,13 +471,29 @@ export async function readNativeWorkspaceGroupRecord(
   return group;
 }
 
+/** Coordinate Git worktree reservations, including overlapping paths under different task names. */
+export async function withNativeWorkspaceGroupCreation<T>(
+  projectRoot: string,
+  name: string,
+  action: () => Promise<T>,
+): Promise<T> {
+  const { runtimeRoot } = resolveWorkspaceRuntimeLocation(projectRoot);
+  const lease = await resolveContainedNativePath(
+    runtimeRoot,
+    path.join(runtimeRoot, 'native', 'workspace-group-creation.lock'),
+  );
+  return withRecoverableFileLock(lease, action, {
+    operation: `reserve Native workspace for ${name}`,
+  });
+}
+
 /** 日志先于 Git 副作用落盘；重试只能继续同一预检，不删除已创建的仓库。 */
 export async function createNativeWorkspaceGroup(
   plan: NativeWorkspaceGroupPlan,
 ): Promise<NativeWorkspaceGroup> {
   await validatePlan(plan);
   const paths = await nativeProjectPaths(plan.coordinatorRoot, 'docs');
-  return withNativeLockRecovery([paths], `create Native workspace group ${plan.name}`, async () => {
+  return withNativeWorkspaceGroupCreation(plan.coordinatorRoot, plan.name, async () => {
     await assertSeparateTaskRoot(plan);
     const directory = await resolveContainedNativePath(
       paths.runtimeDir,

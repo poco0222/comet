@@ -7,6 +7,13 @@ import {
   readProtectedProjectFile,
 } from '../workflow-contract/protected-project-path.js';
 import { atomicWriteBytes, atomicWriteJson } from './native-atomic-file.js';
+import { readNativeBoundedTextFile } from './native-bounded-file.js';
+import {
+  mergeNativeDeltaAgainstCurrent,
+  nativeTotalSpecHash,
+  parseNativeDelta,
+} from './native-delta-spec.js';
+import { nativePortableChangeDir } from './native-portable-storage.js';
 import { canonicalHash } from './native-canonical-hash.js';
 import { nativeProjectPaths } from './native-paths.js';
 import type { NativeWorkspaceGroup } from './native-workspace-group.js';
@@ -97,7 +104,7 @@ async function storage(group: NativeWorkspaceGroup, artifactRootRef: string) {
     read,
     save: (value: SpecBaseline) =>
       atomicWriteJson(path.join(task.runtimeDir, ref), value, { containedRoot: task.runtimeDir }),
-    lock: path.join(coordinator.locksDir, 'workspace-group-specs.lock'),
+    lock: path.join(coordinator.runtimeDir, 'locks', 'workspace-group-specs.lock'),
   };
 }
 
@@ -145,17 +152,91 @@ export async function initializeNativeWorkspaceGroupSpecs(
   });
 }
 
+/** Bind only the Specs that this accepted task will publish to the coordinator. */
+export async function captureNativeWorkspaceGroupSpecPublication(
+  group: NativeWorkspaceGroup,
+  artifactRootRef: string,
+  specChanges: readonly NativePortableSpecChange[],
+  stateName: string,
+): Promise<Array<{ ref: string; hash: string | null }>> {
+  const task = await nativeProjectPaths(group.plan.projectRoot, artifactRootRef, {
+    readOnly: true,
+  });
+  const root = nativePortableChangeDir(task, stateName);
+  return Promise.all(
+    specChanges.map(async (spec) => {
+      const ref = `specs/${spec.capability}/spec.md`;
+      if (!spec.source) return { ref, hash: null };
+      const draft = await readNativeBoundedTextFile({
+        root,
+        ref: spec.source,
+        maxBytes: null,
+        includeHash: false,
+      });
+      if (!spec.delta_source) return { ref, hash: nativeTotalSpecHash(draft.text) };
+      const { text } = await readNativeBoundedTextFile({
+        root,
+        ref: spec.delta_source,
+        maxBytes: null,
+        includeHash: false,
+      });
+      const delta = parseNativeDelta(text);
+      if (delta.capability !== spec.capability)
+        throw new Error(`Native delta capability does not match ${spec.capability}`);
+      const current = await readFile(task.nativeRoot, ref);
+      const merged = mergeNativeDeltaAgainstCurrent({
+        currentMarkdown: current ? Buffer.from(current.content, 'base64').toString('utf8') : '',
+        delta,
+      });
+      return { ref, hash: nativeTotalSpecHash(merged.markdown) };
+    }),
+  );
+}
+
+export async function assertNativeWorkspaceGroupSpecPublication(
+  group: NativeWorkspaceGroup,
+  artifactRootRef: string,
+  entries: ReadonlyArray<{ ref: string; hash: string | null }>,
+) {
+  const task = await nativeProjectPaths(group.plan.projectRoot, artifactRootRef, {
+    readOnly: true,
+  });
+  for (const entry of entries) {
+    const actual = await readFile(task.nativeRoot, entry.ref);
+    const hash = actual
+      ? nativeTotalSpecHash(Buffer.from(actual.content, 'base64').toString('utf8'))
+      : null;
+    if (hash !== entry.hash)
+      throw new Error(`Archived task Spec differs from the accepted delivery: ${entry.ref}`);
+  }
+}
+
 /** Publish only the merged task's capabilities; unrelated shared Specs stay untouched. */
 export async function publishNativeWorkspaceGroupSpecs(options: {
   group: NativeWorkspaceGroup;
   artifactRootRef: string;
   specChanges: readonly NativePortableSpecChange[];
   deliveryId: string;
+  expectedSpecs?: ReadonlyArray<{ ref: string; hash: string | null }>;
 }): Promise<void> {
   const io = await storage(options.group, options.artifactRootRef);
   await withRecoverableFileLock(io.lock, async () => {
     const baseline = await io.read();
     if (!baseline?.installed) throw new Error('Native group Specs baseline is missing');
+    const published = await readFile(io.task.runtimeDir, 'group-delivery/specs-published.json');
+    const receipt = published
+      ? JSON.parse(Buffer.from(published.content, 'base64').toString('utf8'))
+      : null;
+    if (receipt?.acceptedSpecs && options.expectedSpecs) {
+      if (
+        receipt.groupHash !== options.group.plan.hash ||
+        receipt.deliveryId !== options.deliveryId ||
+        canonicalHash('group-delivery-specs', receipt.acceptedSpecs ?? null) !==
+          canonicalHash('group-delivery-specs', options.expectedSpecs)
+      )
+        throw new Error('Native group Specs publication differs from the original delivery');
+      return;
+    }
     const changes: Array<{ ref: string; original: SpecFile | null; desired: SpecFile | null }> = [];
     for (const spec of options.specChanges) {
       const ref = `specs/${spec.capability}/spec.md`;
@@ -165,18 +246,35 @@ export async function publishNativeWorkspaceGroupSpecs(options: {
         throw new Error(`Archived task Spec does not match its operation: ${ref}`);
       changes.push({ ref, original, desired });
     }
-    const receipt = {
+    const specs = changes.map(({ ref, desired }) => ({ ref, hash: desired?.hash ?? null }));
+    const expectedSpecs = options.expectedSpecs;
+    if (expectedSpecs) {
+      const actual = changes.map(({ ref, desired }) => ({
+        ref,
+        hash: desired
+          ? nativeTotalSpecHash(Buffer.from(desired.content, 'base64').toString('utf8'))
+          : null,
+      }));
+      if (
+        canonicalHash('group-delivery-specs', actual) !==
+        canonicalHash('group-delivery-specs', expectedSpecs)
+      )
+        throw new Error('Archived task Specs differ from the accepted delivery');
+    }
+    const publication = {
       groupHash: options.group.plan.hash,
       deliveryId: options.deliveryId,
-      specs: changes.map(({ ref, desired }) => ({ ref, hash: desired?.hash ?? null })),
+      specs,
+      ...(expectedSpecs ? { acceptedSpecs: expectedSpecs } : {}),
     };
-    const published = await readFile(io.task.runtimeDir, 'group-delivery/specs-published.json');
-    if (published) {
+    if (receipt) {
       if (
-        canonicalHash(
-          'publication',
-          JSON.parse(Buffer.from(published.content, 'base64').toString('utf8')),
-        ) !== canonicalHash('publication', receipt)
+        canonicalHash('publication', receipt) !==
+        canonicalHash('publication', {
+          groupHash: publication.groupHash,
+          deliveryId: publication.deliveryId,
+          specs: publication.specs,
+        })
       )
         throw new Error('Native group Specs publication differs from the original delivery');
       return;
@@ -209,7 +307,7 @@ export async function publishNativeWorkspaceGroupSpecs(options: {
     }
     await atomicWriteJson(
       path.join(io.task.runtimeDir, 'group-delivery/specs-published.json'),
-      receipt,
+      publication,
       { containedRoot: io.task.runtimeDir },
     );
   });

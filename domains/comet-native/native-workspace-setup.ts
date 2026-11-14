@@ -3,26 +3,100 @@ import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { withRecoverableFileLock } from '../../platform/fs/recoverable-file-lock.js';
 import { resolveWorkspaceRuntimeLocation } from '../../platform/paths/workspace-runtime.js';
+import { samePath } from '../../platform/paths/git-worktree.js';
 import { runGitCommand } from '../../platform/process/git.js';
 import { normalizeWorkflowRelativePath } from '../workflow-contract/project-config.js';
 import {
   hashProtectedProjectFile,
+  inspectProtectedProjectPath,
   readProtectedProjectFile,
 } from '../workflow-contract/protected-project-path.js';
+import { readFileRaceSafe } from '../../platform/fs/race-safe-read.js';
+import { stripUtf8Bom } from '../../platform/fs/strip-bom.js';
 import { atomicWriteJson } from './native-atomic-file.js';
 import { canonicalHash } from './native-canonical-hash.js';
 import { copyNativeProtectedFile } from './native-protected-file.js';
-import {
-  executeNativeCheck,
-  inspectNativeCheckProcessTreeLiveness,
-  preflightNativeCheckPlans,
-  type NativeCheckPlan,
-  type NativeExecutedCheck,
-} from './native-check-executor.js';
+export interface NativeWorkspaceSetupCheck {
+  id: string;
+  name: string;
+  executable: string;
+  argv: string[];
+  cwdRef: string;
+  timeoutMs: number;
+  repeatable: true;
+}
 
 export interface NativeWorkspaceSetup {
   files: Array<{ path: string; hash: string }>;
-  checks: NativeCheckPlan[];
+  checks: NativeWorkspaceSetupCheck[];
+}
+
+interface WorkspaceSetupCheckResult {
+  id: string;
+  cwd: string;
+  result: 'passed' | 'failed' | 'not-run';
+  note?: string;
+}
+
+export interface NativeWorkspaceSetupReport {
+  id: string;
+  workspaceId: string;
+  checks: WorkspaceSetupCheckResult[];
+}
+
+export interface NativeWorkspaceSetupProgress {
+  id: string;
+  workspaceId: string;
+  status: 'ready' | 'awaiting-checks';
+  checks: Array<NativeWorkspaceSetupCheck & { cwd: string; reconcile?: string }>;
+}
+
+function isCheckResult(value: unknown): value is WorkspaceSetupCheckResult {
+  if (!value || typeof value !== 'object') return false;
+  const check = value as WorkspaceSetupCheckResult;
+  return (
+    Object.keys(check).every((key) => ['id', 'cwd', 'result', 'note'].includes(key)) &&
+    typeof check.id === 'string' &&
+    typeof check.cwd === 'string' &&
+    path.isAbsolute(check.cwd) &&
+    ['passed', 'failed', 'not-run'].includes(check.result) &&
+    (check.note === undefined || (typeof check.note === 'string' && Boolean(check.note.trim())))
+  );
+}
+
+function isSetupReport(value: unknown): value is NativeWorkspaceSetupReport {
+  if (!value || typeof value !== 'object') return false;
+  const report = value as NativeWorkspaceSetupReport;
+  return (
+    Object.keys(report).every((key) => ['id', 'workspaceId', 'checks'].includes(key)) &&
+    typeof report.id === 'string' &&
+    typeof report.workspaceId === 'string' &&
+    Array.isArray(report.checks) &&
+    report.checks.length > 0 &&
+    report.checks.every(isCheckResult) &&
+    new Set(report.checks.map(({ id }) => id)).size === report.checks.length
+  );
+}
+
+export async function readNativeWorkspaceSetupReport(
+  file: string,
+): Promise<NativeWorkspaceSetupReport> {
+  const { bytes } = await readFileRaceSafe(path.resolve(file), Number.MAX_SAFE_INTEGER, {
+    label: 'workspace setup report',
+  });
+  const value: unknown = JSON.parse(stripUtf8Bom(bytes.toString('utf8')));
+  if (!isSetupReport(value)) throw new Error('Invalid workspace setup report');
+  return value;
+}
+
+async function setupCheckCwd(root: string, ref: string): Promise<string> {
+  if (ref === '.') return root;
+  const inspected = await inspectProtectedProjectPath(root, ref, {
+    label: 'workspace setup check directory',
+    expected: 'directory',
+  });
+  if (!inspected.exists) throw new Error(`Workspace setup check directory is missing: ${ref}`);
+  return inspected.target;
 }
 
 export function validateNativeWorkspaceSetup(
@@ -50,6 +124,7 @@ export function validateNativeWorkspaceSetup(
       throw new Error('Workspace setup files must be unique files inside declared repositories');
     files.add(file.path);
   }
+  const checkIds = new Set<string>();
   for (const check of setup.checks) {
     if (
       !check ||
@@ -62,17 +137,21 @@ export function validateNativeWorkspaceSetup(
       ) ||
       !Array.isArray(check.argv) ||
       !check.argv.every((arg) => typeof arg === 'string') ||
+      checkIds.has(check.id) ||
       check.repeatable !== true ||
       !Number.isSafeInteger(check.timeoutMs) ||
       check.timeoutMs < 1 ||
       (check.cwdRef !== '.' &&
-        !repositories.some(
-          (repo) => check.cwdRef === repo.path || check.cwdRef.startsWith(`${repo.path}/`),
-        ))
+        (normalizeWorkflowRelativePath(check.cwdRef, 'workspace setup check directory') !==
+          check.cwdRef ||
+          !repositories.some(
+            (repo) => check.cwdRef === repo.path || check.cwdRef.startsWith(`${repo.path}/`),
+          )))
     )
       throw new Error(
-        'Workspace setup checks must be repeatable commands in the task or a declared repository',
+        'Workspace setup checks must be unique repeatable commands in the task or a declared repository',
       );
+    checkIds.add(check.id);
   }
 }
 
@@ -91,7 +170,7 @@ function assertIgnoredLocalFile(
   }
 }
 
-/** 只读检查文件与可执行程序；计划仅保存摘要，不把本地配置内容写入响应。 */
+/** 只读检查本地文件和工作目录，计划仅记录文件摘要。 */
 export async function planNativeWorkspaceSetup(
   root: string,
   file: string,
@@ -119,10 +198,10 @@ export async function planNativeWorkspaceSetup(
       path: normalizeWorkflowRelativePath(ref, 'setup file'),
       hash: '0'.repeat(64),
     })),
-    checks: (value.checks as NativeCheckPlan[] | undefined) ?? [],
+    checks: (value.checks as NativeWorkspaceSetupCheck[] | undefined) ?? [],
   };
   validateNativeWorkspaceSetup(setup, repositories);
-  preflightNativeCheckPlans(root, setup.checks);
+  await Promise.all(setup.checks.map(({ cwdRef }) => setupCheckCwd(root, cwdRef)));
   for (const entry of setup.files) {
     assertIgnoredLocalFile(root, entry.path, repositories);
     entry.hash = (
@@ -132,11 +211,19 @@ export async function planNativeWorkspaceSetup(
   return setup;
 }
 
-interface SetupAttempt {
+interface LegacySetupAttempt {
   id: string;
   operationId: string;
   process: { pid: number; identity?: string } | null;
-  result: (NativeExecutedCheck & { logSha256: string }) | null;
+  result: {
+    id: string;
+    status: 'passed' | 'failed' | 'interrupted';
+    exitCode: number | null;
+    timedOut: boolean;
+    repeatable: boolean;
+    logRef: string;
+    logSha256: string;
+  } | null;
 }
 
 /** 与工作流阶段无关的准备收据；失败重试不覆盖已经交给任务的本地配置。 */
@@ -146,21 +233,27 @@ export async function prepareNativeWorkspaceSetup(options: {
   repositories: readonly { path: string }[];
   setup?: NativeWorkspaceSetup;
   beforeChecks?: () => Promise<void>;
-}): Promise<void> {
-  const { setup, sourceRoot, targetRoot, repositories } = options;
-  if (!setup) return;
+  report?: NativeWorkspaceSetupReport;
+}): Promise<NativeWorkspaceSetupProgress | undefined> {
+  const { setup, sourceRoot, targetRoot, repositories, report } = options;
+  if (!setup) {
+    if (report) throw new Error('This workspace has no setup to report');
+    return;
+  }
   validateNativeWorkspaceSetup(setup, repositories);
   const { runtimeRoot, workspaceId } = resolveWorkspaceRuntimeLocation(targetRoot);
   const hash = canonicalHash('comet.workspace-setup.v1', setup);
   const ref = `workspace-setup/${hash}.json`;
   await fs.mkdir(runtimeRoot, { recursive: true });
-  await withRecoverableFileLock(path.join(runtimeRoot, 'workspace-setup.lock'), async () => {
+  return withRecoverableFileLock(path.join(runtimeRoot, 'workspace-setup.lock'), async () => {
     let receipt: {
       schema: 'comet.workspace-setup.v1';
       hash: string;
       workspaceId: string;
       files: string[];
-      attempts: SetupAttempt[];
+      attempts: LegacySetupAttempt[];
+      reportId?: string;
+      reports?: NativeWorkspaceSetupReport[];
     };
     try {
       const { bytes } = await readProtectedProjectFile(runtimeRoot, ref, Number.MAX_SAFE_INTEGER, {
@@ -176,6 +269,16 @@ export async function prepareNativeWorkspaceSetup(options: {
         receipt.files.some((ref) => !setup.files.some((file) => file.path === ref)) ||
         new Set(receipt.files).size !== receipt.files.length ||
         !Array.isArray(receipt.attempts) ||
+        (receipt.reportId !== undefined && typeof receipt.reportId !== 'string') ||
+        (receipt.reports !== undefined &&
+          (!Array.isArray(receipt.reports) ||
+            receipt.reports.some(
+              (entry) =>
+                !isSetupReport(entry) ||
+                entry.workspaceId !== workspaceId ||
+                entry.checks.some(({ id }) => !setup.checks.some((check) => check.id === id)),
+            ) ||
+            new Set(receipt.reports.map(({ id }) => id)).size !== receipt.reports.length)) ||
         receipt.attempts.some(
           (attempt) =>
             !attempt ||
@@ -204,6 +307,15 @@ export async function prepareNativeWorkspaceSetup(options: {
       if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
       receipt = { schema: 'comet.workspace-setup.v1', hash, workspaceId, files: [], attempts: [] };
     }
+    const previousReport = report && receipt.reports?.find(({ id }) => id === report.id);
+    if (
+      report &&
+      (report.workspaceId !== workspaceId ||
+        (previousReport
+          ? canonicalHash('setup report', previousReport) !== canonicalHash('setup report', report)
+          : report.id !== receipt.reportId))
+    )
+      throw new Error('Workspace setup report does not match the current request');
     const save = () =>
       atomicWriteJson(path.join(runtimeRoot, ref), receipt, { containedRoot: runtimeRoot });
     for (const entry of setup.files) {
@@ -251,55 +363,61 @@ export async function prepareNativeWorkspaceSetup(options: {
       receipt.files.push(entry.path);
       await save();
     }
-    preflightNativeCheckPlans(targetRoot, setup.checks);
     await options.beforeChecks?.();
-    for (const check of setup.checks) {
-      const previous = receipt.attempts.filter((attempt) => attempt.id === check.id).at(-1);
-      if (previous?.result?.status === 'passed') {
-        const log = await hashProtectedProjectFile(runtimeRoot, previous.result.logRef, {
-          label: 'workspace setup log',
+    const checks = await Promise.all(
+      setup.checks.map(async (check) => ({
+        ...check,
+        cwd: await setupCheckCwd(targetRoot, check.cwdRef),
+      })),
+    );
+    const legacyAttempts = new Map(receipt.attempts.map((attempt) => [attempt.id, attempt]));
+    if (report && !previousReport) {
+      for (const result of report.checks) {
+        const check = checks.find(({ id }) => id === result.id);
+        if (!check || !samePath(result.cwd, check.cwd))
+          throw new Error(`Workspace setup report check or directory does not match: ${result.id}`);
+        const legacy = legacyAttempts.get(result.id);
+        if (legacy && !legacy.result && !result.note)
+          throw new Error(`Reconcile the original setup execution before reporting ${result.id}`);
+      }
+      (receipt.reports ??= []).push(report);
+      receipt.reportId = randomUUID();
+      await save();
+    }
+    const results = new Map(
+      (receipt.reports ?? []).flatMap(({ checks }) => checks.map((result) => [result.id, result])),
+    );
+    const pending: NativeWorkspaceSetupProgress['checks'] = [];
+    for (const check of checks) {
+      const result = results.get(check.id);
+      if (result?.result === 'passed') continue;
+      const legacy = legacyAttempts.get(check.id);
+      if (!result && legacy?.result?.status === 'passed') {
+        const log = await hashProtectedProjectFile(runtimeRoot, legacy.result.logRef, {
+          label: 'legacy workspace setup log',
         });
-        if (log.digest !== previous.result.logSha256)
-          throw new Error(`Workspace setup log changed: ${previous.result.logRef}`);
+        if (log.digest !== legacy.result.logSha256)
+          throw new Error(`Legacy workspace setup log changed: ${legacy.result.logRef}`);
         continue;
       }
-      if (
-        previous?.process &&
-        !previous.result &&
-        (await inspectNativeCheckProcessTreeLiveness(
-          previous.process.pid,
-          previous.process.identity,
-        )) !== 'dead'
-      )
-        throw new Error(
-          `Workspace setup may still be running: ${previous.operationId}; inspect the recorded process before retrying the same command`,
-        );
-      const attempt: SetupAttempt = {
-        id: check.id,
-        operationId: randomUUID(),
-        process: null,
-        result: null,
-      };
-      receipt.attempts.push(attempt);
-      await save();
-      attempt.result = await executeNativeCheck({
-        projectRoot: targetRoot,
-        runtimeDir: runtimeRoot,
-        operationId: attempt.operationId,
-        plan: check,
-        onSpawn: async (process) => {
-          attempt.process = {
-            pid: process.pid,
-            ...(process.identity ? { identity: process.identity } : {}),
-          };
-          await save();
-        },
+      pending.push({
+        ...check,
+        ...(legacy && !legacy.result && !result
+          ? {
+              reconcile: `Inspect original workspace setup execution ${legacy.operationId} in the Agent platform before retrying or reporting its result`,
+            }
+          : {}),
       });
-      await save();
-      if (attempt.result.status !== 'passed')
-        throw new Error(
-          `Workspace setup failed: ${check.id}; log: ${path.join(runtimeRoot, attempt.result.logRef)}. Resolve the environment error in ${targetRoot} and retry the same command`,
-        );
     }
+    if (!receipt.reportId) {
+      receipt.reportId = randomUUID();
+      await save();
+    }
+    return {
+      id: receipt.reportId,
+      workspaceId,
+      status: pending.length ? 'awaiting-checks' : 'ready',
+      checks: pending,
+    };
   });
 }

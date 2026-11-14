@@ -8,23 +8,21 @@ import {
   resolveCometDataRoot,
   resolveWorkspaceIdentity,
 } from '../../platform/paths/workspace-runtime.js';
-import { gitStatusPaths, gitWorktreeIsClean, runGitCommand } from '../../platform/process/git.js';
+import { gitWorktreeIsClean, runGitCommand } from '../../platform/process/git.js';
 import {
   hashProtectedProjectFile,
+  inspectProtectedProjectPath,
   readProtectedProjectFile,
 } from '../workflow-contract/protected-project-path.js';
 import { atomicWriteJson } from './native-atomic-file.js';
 import { canonicalHash } from './native-canonical-hash.js';
-import {
-  executeNativeCheck,
-  inspectNativeCheckProcessTreeLiveness,
-  preflightNativeCheckPlans,
-  type NativeCheckPlan,
-  type NativeExecutedCheck,
-} from './native-check-executor.js';
 import { nativeProjectPaths } from './native-paths.js';
-import { nativeRawInputSnapshot, readNativeInputExclusions } from './native-portable-checks.js';
-import { isNativeCodeGraphCachePath } from './native-sensitive-paths.js';
+import {
+  captureNativeWorkspaceDeliverySetupFiles,
+  captureNativeWorkspaceDeliveryRootFiles,
+  captureNativeWorkspaceDeliveryTrees,
+  nativeWorkspaceDeliveryPaths,
+} from './native-workspace-delivery-binding.js';
 import { copyNativeProtectedFile } from './native-protected-file.js';
 import { normalizeWorkflowRelativePath } from '../workflow-contract/project-config.js';
 import { registerWorkspaceGroupIntegration } from '../workflow-contract/workspace-group.js';
@@ -39,7 +37,7 @@ import {
 
 interface RepositoryDelivery {
   path: string;
-  sourceHash: string;
+  sourceHash?: string;
   sourceParent: string;
   sourceTree: string | null;
   sourceCommit: string | null;
@@ -52,51 +50,138 @@ interface RepositoryDelivery {
   applyStarted: boolean;
 }
 
-interface DeliveryCheck {
+interface LegacyDeliveryCheck {
   id: string;
   operationId: string;
   inputHash: string;
   process: { pid: number; identity?: string } | null;
-  result: (NativeExecutedCheck & { logSha256: string }) | null;
+  result: { status: string; logRef: string; logSha256: string } | null;
 }
 
-export interface NativeWorkspaceGroupDelivery {
-  schema: 'comet.native.workspace-group-delivery.v1';
+interface DeliveryCheckRequirement {
+  id: string;
+  name: string;
+  cwdRef?: string;
+  executable?: string;
+  argv?: string[];
+}
+
+interface DeliveryCheckReport {
+  deliveryId: string;
+  planHash: string;
+  checks: Array<{
+    id: string;
+    command?: string;
+    actualCommand?: { executable: string; argv: string[] };
+    cwd: string;
+    result: 'passed' | 'failed' | 'not-run';
+    note?: string;
+  }>;
+  noChecksReason?: string;
+  legacyReconciliation?: string;
+}
+
+interface DeliveryJournal {
   id: string;
   supersedes: string | null;
   groupHash: string;
   candidateId: string;
   commitMessage: string;
-  checks: NativeCheckPlan[];
   artifactRootRef: string;
   rootFiles: Array<{ path: string; hash: string; mode: string; generated?: true }>;
   localFiles: NativeWorkspaceSetup['files'];
   integrationRoot: string;
   integrationRootId: string | null;
   repositories: RepositoryDelivery[];
-  checkAttempts: DeliveryCheck[];
-  integrationHash: string | null;
   planHash: string | null;
+}
+
+interface LegacyDeliveryJournal extends DeliveryJournal {
+  schema: 'comet.native.workspace-group-delivery.v1';
+  checks: Array<{ id: string; name: string; cwdRef: string; executable: string; argv: string[] }>;
+  checkAttempts: LegacyDeliveryCheck[];
+  integrationHash: string | null;
   status: 'preparing' | 'ready' | 'applying' | 'merged';
 }
 
+interface ReportedDeliveryJournal extends DeliveryJournal {
+  schema: 'comet.native.workspace-group-delivery.v2';
+  checks: DeliveryCheckRequirement[];
+  reports: DeliveryCheckReport[];
+  legacyPlanHash?: string;
+  legacyUnconfirmed?: string[];
+  legacyRootFiles?: true;
+  status: 'preparing' | 'awaiting-checks' | 'ready' | 'applying' | 'merged';
+}
+
+export type NativeWorkspaceGroupDelivery = LegacyDeliveryJournal | ReportedDeliveryJournal;
+
+function isLegacy(journal: NativeWorkspaceGroupDelivery): journal is LegacyDeliveryJournal {
+  return journal.schema === 'comet.native.workspace-group-delivery.v1';
+}
+
 function deliveryHash(journal: NativeWorkspaceGroupDelivery): string {
-  return canonicalHash('comet.native.workspace-group-delivery-plan.v1', {
+  const repositories = journal.repositories.map(
+    ({ applied: _applied, applyStarted: _started, ...entry }) => entry,
+  );
+  if (isLegacy(journal)) {
+    return canonicalHash('comet.native.workspace-group-delivery-plan.v1', {
+      id: journal.id,
+      groupHash: journal.groupHash,
+      candidateId: journal.candidateId,
+      repositories,
+      checks: journal.checks,
+      artifactRootRef: journal.artifactRootRef,
+      rootFiles: journal.rootFiles,
+      localFiles: journal.localFiles,
+      checkAttempts: journal.checkAttempts,
+      integrationRoot: journal.integrationRoot,
+      integrationRootId: journal.integrationRootId,
+      integrationHash: journal.integrationHash,
+    });
+  }
+  return canonicalHash('comet.native.workspace-group-delivery-plan.v2', {
     id: journal.id,
     groupHash: journal.groupHash,
     candidateId: journal.candidateId,
-    repositories: journal.repositories.map(
-      ({ applied: _applied, applyStarted: _started, ...entry }) => entry,
-    ),
+    repositories,
     checks: journal.checks,
     artifactRootRef: journal.artifactRootRef,
     rootFiles: journal.rootFiles,
     localFiles: journal.localFiles,
-    checkAttempts: journal.checkAttempts,
     integrationRoot: journal.integrationRoot,
     integrationRootId: journal.integrationRootId,
-    integrationHash: journal.integrationHash,
+    reports: journal.reports,
   });
+}
+
+export function nativeWorkspaceDeliveryReportTemplate(journal: NativeWorkspaceGroupDelivery) {
+  if (isLegacy(journal) || !['awaiting-checks', 'ready'].includes(journal.status)) return null;
+  return {
+    deliveryId: journal.id,
+    planHash: deliveryHash(journal),
+    checks: [...journal.checks]
+      .sort((a, b) => Number(b.id.startsWith('setup:')) - Number(a.id.startsWith('setup:')))
+      .map((check) => ({
+        id: check.id,
+        name: check.name,
+        cwd: path.resolve(journal.integrationRoot, check.cwdRef ?? '.'),
+        ...(check.executable
+          ? {
+              executable: check.executable,
+              argv: check.argv,
+              actualCommand: { executable: '', argv: [] },
+            }
+          : {}),
+        command: '',
+        result: 'not-run',
+        note: '',
+      })),
+    ...(journal.checks.length ? {} : { noChecksReason: '' }),
+    ...(journal.legacyUnconfirmed?.length && !journal.reports.some((r) => r.legacyReconciliation)
+      ? { legacyUnconfirmed: journal.legacyUnconfirmed, legacyReconciliation: '' }
+      : {}),
+  };
 }
 
 async function directoryExists(root: string): Promise<boolean> {
@@ -129,153 +214,103 @@ function targetCheckout(
   return { root, id: root ? resolveWorkspaceIdentity(root).workspaceId : null };
 }
 
-async function repositoryInput(
-  root: string,
-  ref: string,
-  checks: readonly NativeCheckPlan[],
-  managedArtifactRoot: string,
-  localFiles: readonly { path: string }[],
-  exclusionRoot = ref.split('/').reduce((parent) => path.dirname(parent), root),
-) {
-  const prefix = `${ref}/`;
-  const snapshot = await nativeRawInputSnapshot({
-    projectRoot: root,
-    exclusionScope: { projectRoot: exclusionRoot, relativeRoot: ref },
-    managedArtifactRoot,
-    includedPaths: localFiles
-      .filter((file) => file.path.startsWith(prefix))
-      .map((file) => file.path.slice(prefix.length)),
-    outputs: checks
-      .flatMap((check) => check.outputs ?? [])
-      .filter((output) => output.startsWith(prefix))
-      .map((output) => output.slice(prefix.length)),
-  });
-  if (!snapshot.complete)
-    throw new Error(
-      `Delivery inputs are incomplete at ${root}: ${snapshot.diagnostics.join('; ')}`,
-    );
-  return snapshot;
+function repositoryHead(root: string): string {
+  return runGitCommand(root, ['rev-parse', 'HEAD']);
 }
 
-function changedGitPaths(root: string, args: string[]): string[] {
-  return runGitCommand(root, [...args, '--name-status', '--no-renames', '-z'])
-    .split('\0')
-    .filter((ref, index) => index % 2 === 1 && ref);
-}
-
-function trackedDeliveryChanges(root: string): string[] {
-  return [
-    ...changedGitPaths(root, ['diff', '--cached', 'HEAD']),
-    ...changedGitPaths(root, ['diff-files', '--ignore-submodules=dirty']),
-  ];
-}
-
-function untrackedDeliveryPaths(root: string): string[] {
-  return runGitCommand(root, ['ls-files', '--others', '--exclude-standard', '-t', '-z'])
-    .split('\0')
-    .filter(Boolean)
-    .map((entry) => entry.slice(2));
-}
-
-async function rootInput(
-  root: string,
-  repositories: readonly { path: string }[],
-  checks: readonly NativeCheckPlan[],
-  artifactRootRef: string,
-  exclusionRoot = root,
-) {
-  const snapshot = await nativeRawInputSnapshot({
-    projectRoot: root,
-    exclusionScope: { projectRoot: exclusionRoot },
-    managedArtifactRoot: path.resolve(root, artifactRootRef),
-    excludedPaths: repositories.map((entry) => entry.path),
-    outputs: checks.flatMap((check) => check.outputs ?? []),
-  });
-  if (!snapshot.complete)
-    throw new Error(`Delivery root inputs are incomplete: ${snapshot.diagnostics.join('; ')}`);
-  return snapshot.files;
+function gitTree(root: string, commit: string): string {
+  return runGitCommand(root, ['rev-parse', `${commit}^{tree}`]);
 }
 
 async function assertRootInput(
-  root: string,
+  group: NativeWorkspaceGroup,
   journal: NativeWorkspaceGroupDelivery,
-  exclusionRoot = root,
+  root = group.plan.projectRoot,
 ) {
-  const files = await rootInput(
-    root,
-    journal.repositories,
-    journal.checks,
-    journal.artifactRootRef,
-    exclusionRoot,
-  );
-  if (canonicalHash('root-files', files) !== canonicalHash('root-files', journal.rootFiles))
-    throw new Error(`Delivery root inputs changed: ${root}`);
+  if (!isLegacy(journal) && !journal.legacyRootFiles) {
+    const files = await captureNativeWorkspaceDeliveryRootFiles(group, root);
+    if (canonicalHash('root-files', files) !== canonicalHash('root-files', journal.rootFiles))
+      throw new Error(`Delivery root inputs changed: ${root}`);
+    return;
+  }
+  for (const file of journal.rootFiles) {
+    const observed = await hashProtectedProjectFile(root, file.path, {
+      label: 'Delivery root input',
+    });
+    if (observed.digest !== file.hash)
+      throw new Error(`Delivery root inputs changed: ${root}/${file.path}`);
+  }
 }
 
-async function integrationFingerprint(
-  journal: NativeWorkspaceGroupDelivery,
-  exclusionRoot: string,
-): Promise<string> {
-  const repositories = [];
+async function assertLocalInputs(journal: NativeWorkspaceGroupDelivery, root: string) {
+  for (const file of journal.localFiles) {
+    const observed = await hashProtectedProjectFile(root, file.path, {
+      label: 'Delivery local input',
+    });
+    if (observed.digest !== file.hash)
+      throw new Error(`Delivery local inputs changed: ${root}/${file.path}`);
+  }
+}
+
+async function assertIntegration(group: NativeWorkspaceGroup, journal: ReportedDeliveryJournal) {
   if (resolveWorkspaceIdentity(journal.integrationRoot).workspaceId !== journal.integrationRootId)
     throw new Error(`Integration directory was replaced: ${journal.integrationRoot}`);
-  await assertRootInput(journal.integrationRoot, journal, exclusionRoot);
+  await assertRootInput(group, journal, journal.integrationRoot);
+  await assertLocalInputs(journal, journal.integrationRoot);
   for (const entry of journal.repositories) {
     const root = path.join(journal.integrationRoot, entry.path);
     if (
       resolveWorkspaceIdentity(root).workspaceId !== entry.integrationWorkspaceId ||
-      runGitCommand(root, ['rev-parse', 'HEAD']) !== entry.integrationCommit
+      repositoryHead(root) !== entry.integrationCommit
     )
       throw new Error(`Integration worktree changed: ${root}`);
-    const input = await repositoryInput(
-      root,
-      entry.path,
-      journal.checks,
-      path.resolve(journal.integrationRoot, journal.artifactRootRef),
-      journal.localFiles,
-      exclusionRoot,
-    );
-    const outputs = journal.checks
-      .flatMap((check) => check.outputs ?? [])
-      .filter((output) => output.startsWith(`${entry.path}/`))
-      .map((output) => output.slice(entry.path.length + 1));
-    const tracked = new Set(
-      runGitCommand(root, ['ls-tree', '-r', '--name-only', '-z', 'HEAD']).split('\0'),
-    );
-    if (
-      (input.exclusionHash
-        ? trackedDeliveryChanges(root).some(
-            (ref) => !outputs.some((output) => ref === output || ref.startsWith(`${output}/`)),
-          )
-        : runGitCommand(root, [
-            'diff',
-            '--name-only',
-            '-z',
-            'HEAD',
-            '--',
-            '.',
-            ...outputs.map((output) => `:(exclude,literal)${output}`),
-          ])) ||
-      input.files.some(
-        (file) =>
-          !file.generated &&
-          !tracked.has(file.path) &&
-          !journal.localFiles.some((local) => local.path === `${entry.path}/${file.path}`),
-      )
-    )
+    if (!gitWorktreeIsClean(root))
       throw new Error(
         `Integration inputs are not committed: ${root}; preserve local changes and refresh integration from the accepted candidate`,
       );
-    repositories.push({
-      path: entry.path,
-      commit: entry.integrationCommit,
-      contentHash: input.contentHash,
-    });
   }
-  return canonicalHash('comet.native.workspace-group-integration.v1', {
-    repositories,
-    rootFiles: journal.rootFiles,
-  });
+}
+
+async function assertSource(group: NativeWorkspaceGroup, journal: ReportedDeliveryJournal) {
+  await assertRootInput(group, journal);
+  await assertLocalInputs(journal, group.plan.projectRoot);
+  const trees = await captureNativeWorkspaceDeliveryTrees(group);
+  for (const [index, entry] of group.plan.repositories.entries()) {
+    const receipt = journal.repositories[index];
+    if (
+      repositoryHead(entry.worktreeRoot) !== receipt.sourceCommit ||
+      trees[index].tree !== receipt.sourceTree
+    )
+      throw new Error(`Task candidate changed before merge: ${entry.path}`);
+  }
+}
+
+function targetHead(entry: NativeWorkspaceGroup['plan']['repositories'][number]): string {
+  return runGitCommand(entry.sourceRoot, ['rev-parse', `refs/heads/${entry.targetBranch}`]);
+}
+
+function assertTargetRefs(group: NativeWorkspaceGroup, journal: NativeWorkspaceGroupDelivery) {
+  for (const [index, entry] of group.plan.repositories.entries()) {
+    const receipt = journal.repositories[index];
+    const current = targetHead(entry);
+    if (journal.status === 'merged') {
+      runGitCommand(entry.sourceRoot, [
+        'merge-base',
+        '--is-ancestor',
+        receipt.integrationCommit!,
+        current,
+      ]);
+    } else if (receipt.applied || (receipt.applyStarted && current !== receipt.targetCommit)) {
+      if (current !== receipt.integrationCommit)
+        throw new Error(
+          `Delivery target moved after partial publication: ${entry.path}:${entry.targetBranch}; refresh integration and rerun its checks`,
+        );
+    } else if (current !== receipt.targetCommit) {
+      throw new Error(
+        `Delivery target moved: ${entry.path}:${entry.targetBranch}; rebuild integration and rerun its checks`,
+      );
+    }
+  }
 }
 
 function assertJournal(journal: NativeWorkspaceGroupDelivery, group: NativeWorkspaceGroup): void {
@@ -284,10 +319,13 @@ function assertJournal(journal: NativeWorkspaceGroupDelivery, group: NativeWorks
   const hash = (value: unknown) => typeof value === 'string' && /^[a-f0-9]{64}$/u.test(value);
   if (
     !journal ||
-    journal.schema !== 'comet.native.workspace-group-delivery.v1' ||
+    ![
+      'comet.native.workspace-group-delivery.v1',
+      'comet.native.workspace-group-delivery.v2',
+    ].includes(journal.schema) ||
     !/^[a-f0-9-]{36}$/u.test(journal.id) ||
     journal.groupHash !== group.plan.hash ||
-    !['preparing', 'ready', 'applying', 'merged'].includes(journal.status) ||
+    !['preparing', 'awaiting-checks', 'ready', 'applying', 'merged'].includes(journal.status) ||
     journal.integrationRoot !==
       path.join(path.dirname(group.plan.projectRoot), `.comet-integration-${journal.id}`) ||
     typeof journal.candidateId !== 'string' ||
@@ -295,7 +333,7 @@ function assertJournal(journal: NativeWorkspaceGroupDelivery, group: NativeWorks
     typeof journal.commitMessage !== 'string' ||
     !journal.commitMessage.trim() ||
     !Array.isArray(journal.checks) ||
-    !Array.isArray(journal.checkAttempts) ||
+    (isLegacy(journal) ? !Array.isArray(journal.checkAttempts) : !Array.isArray(journal.reports)) ||
     typeof journal.artifactRootRef !== 'string' ||
     !Array.isArray(journal.rootFiles) ||
     !Array.isArray(journal.localFiles) ||
@@ -313,7 +351,7 @@ function assertJournal(journal: NativeWorkspaceGroupDelivery, group: NativeWorks
       (entry, index) =>
         !entry ||
         entry.path !== group.plan.repositories[index].path ||
-        !hash(entry.sourceHash) ||
+        (isLegacy(journal) && !hash(entry.sourceHash)) ||
         !commit(entry.sourceParent) ||
         !commit(entry.targetCommit) ||
         (entry.sourceTree !== null && !commit(entry.sourceTree)) ||
@@ -344,7 +382,7 @@ function assertJournal(journal: NativeWorkspaceGroupDelivery, group: NativeWorks
     paths.add(file.path);
   }
   if (
-    journal.status !== 'preparing' &&
+    ['ready', 'applying', 'merged'].includes(journal.status) &&
     (!journal.planHash || journal.planHash !== deliveryHash(journal))
   )
     throw new Error('Native workspace group delivery plan hash differs from its journal');
@@ -371,7 +409,12 @@ async function deliveryStorage(group: NativeWorkspaceGroup, readOnly = false) {
   };
   const save = (journal: NativeWorkspaceGroupDelivery) =>
     atomicWriteJson(path.join(paths.runtimeDir, ref), journal, { containedRoot: paths.runtimeDir });
-  return { paths, read, save, lease: path.join(paths.locksDir, 'group-delivery.lock') };
+  return {
+    paths,
+    read,
+    save,
+    lease: path.join(paths.runtimeDir, 'locks', 'group-delivery.lock'),
+  };
 }
 
 export async function inspectNativeWorkspaceGroupDelivery(
@@ -408,32 +451,126 @@ export async function listNativeWorkspaceGroupDeliveries(
   return result;
 }
 
-async function assertDeliveryChecks(journal: NativeWorkspaceGroupDelivery, runtimeDir: string) {
-  for (const plan of journal.checks) {
-    const attempt = journal.checkAttempts.filter((entry) => entry.id === plan.id).at(-1);
-    if (
-      !attempt?.result ||
-      attempt.result.status !== 'passed' ||
-      attempt.inputHash !== journal.integrationHash
-    )
-      throw new Error(`Integration check has no current passing result: ${plan.id}`);
-    const log = await hashProtectedProjectFile(runtimeDir, attempt.result.logRef, {
-      label: 'Native integration check log',
-    });
-    if (log.digest !== attempt.result.logSha256)
-      throw new Error(`Integration check log changed: ${attempt.result.logRef}`);
-  }
+interface DeliveryCandidateInputs {
+  trees: readonly { path: string; head: string; tree: string }[];
+  rootFiles: DeliveryJournal['rootFiles'];
+  localFiles: DeliveryJournal['localFiles'];
 }
 
-/** Commit only the accepted task bytes, then verify the actual merged trees before any target update. */
+function sourceCommitMessage(journal: DeliveryJournal) {
+  return `${journal.commitMessage}
+
+Comet-Delivery: ${journal.id}
+Comet-Candidate: ${journal.candidateId}`;
+}
+
+function isOriginalSourceCommit(
+  root: string,
+  head: string,
+  receipt: RepositoryDelivery,
+  journal: DeliveryJournal,
+) {
+  return (
+    runGitCommand(root, ['show', '-s', '--format=%P', head]) === receipt.sourceParent &&
+    gitTree(root, head) === receipt.sourceTree &&
+    runGitCommand(root, ['show', '-s', '--format=%B', head]) === sourceCommitMessage(journal)
+  );
+}
+
+async function preserveLegacyJournal(
+  group: NativeWorkspaceGroup,
+  journal: LegacyDeliveryJournal,
+  runtimeDir: string,
+  validateCandidate?: () => Promise<void | DeliveryCandidateInputs>,
+): Promise<ReportedDeliveryJournal> {
+  await assertRootInput(group, journal);
+  await assertLocalInputs(journal, group.plan.projectRoot);
+  const needsOriginalProof = journal.repositories.some((entry) => !entry.sourceTree);
+  const missingProof = () =>
+    new Error(
+      'Original delivery has no recorded source tree. Preserve the journal and restore every task branch to its recorded original parent and the archived candidate inputs before retrying without --refresh.',
+    );
+  const current = await captureNativeWorkspaceDeliveryTrees(group);
+  let accepted: DeliveryCandidateInputs | undefined;
+  if (needsOriginalProof) {
+    if (
+      journal.status !== 'preparing' ||
+      journal.repositories.some((entry, index) => current[index].head !== entry.sourceParent)
+    )
+      throw missingProof();
+    try {
+      accepted = (await validateCandidate?.()) || undefined;
+    } catch (cause) {
+      throw new Error(missingProof().message, { cause });
+    }
+    if (!accepted) throw missingProof();
+  }
+  const repositories = journal.repositories.map((receipt, index) => {
+    const entry = group.plan.repositories[index];
+    const { head, tree } = current[index];
+    if (!receipt.sourceTree) {
+      const proof = accepted?.trees[index];
+      if (
+        receipt.sourceCommit ||
+        receipt.integrationCommit ||
+        proof?.path !== receipt.path ||
+        proof.head !== head ||
+        proof.tree !== tree
+      )
+        throw missingProof();
+      return { ...receipt, sourceTree: tree };
+    }
+    if (receipt.sourceTree !== tree)
+      throw new Error(
+        `Original delivery tree changed: ${entry.worktreeRoot}; restore its recorded tree before retrying`,
+      );
+    if (receipt.sourceCommit) {
+      if (head !== receipt.sourceCommit || gitTree(entry.worktreeRoot, head) !== receipt.sourceTree)
+        throw new Error(`Original delivery source commit changed: ${entry.worktreeRoot}`);
+      return receipt;
+    }
+    if (head === receipt.sourceParent) return receipt;
+    if (!isOriginalSourceCommit(entry.worktreeRoot, head, receipt, journal))
+      throw new Error(
+        `Unrecorded task commit differs from original delivery: ${entry.worktreeRoot}; restore the original recorded commit or parent before retrying`,
+      );
+    return { ...receipt, sourceCommit: head };
+  });
+  const legacyUnconfirmed = journal.checkAttempts
+    .filter((attempt) => attempt.process && !attempt.result)
+    .map((attempt) => attempt.operationId);
+  await atomicWriteJson(
+    path.join(runtimeDir, 'group-delivery/legacy', `${journal.id}.json`),
+    journal,
+    { containedRoot: runtimeDir },
+  );
+  const {
+    schema: _schema,
+    checkAttempts: _checkAttempts,
+    integrationHash: _integrationHash,
+    ...rest
+  } = journal;
+  return {
+    ...rest,
+    schema: 'comet.native.workspace-group-delivery.v2',
+    repositories,
+    legacyRootFiles: true,
+    ...(journal.planHash ? { legacyPlanHash: journal.planHash } : {}),
+    ...(legacyUnconfirmed.length ? { legacyUnconfirmed } : {}),
+    reports: [],
+    planHash: null,
+    status: 'preparing',
+  };
+}
+
 export async function prepareNativeWorkspaceGroupDelivery(options: {
   group: NativeWorkspaceGroup;
   candidateId: string;
   commitMessage: string;
-  checks: NativeCheckPlan[];
+  checks: DeliveryCheckRequirement[];
   artifactRootRef?: string;
   refreshDeliveryId?: string;
-  validateCandidate?: () => Promise<void>;
+  validateCandidate?: () => Promise<void | DeliveryCandidateInputs>;
 }): Promise<NativeWorkspaceGroupDelivery> {
   const { group } = options;
   const artifactRootRef = options.artifactRootRef ?? 'docs';
@@ -443,99 +580,75 @@ export async function prepareNativeWorkspaceGroupDelivery(options: {
   )
     throw new Error('Invalid Native delivery artifact root');
   await assertNativeWorkspaceGroupCurrent(group);
-  if (
-    !options.candidateId ||
-    !options.commitMessage.trim() ||
-    options.checks.some((check) => !check.repeatable)
-  )
-    throw new Error(
-      'Group delivery requires an accepted candidate, a commit message and repeatable integration checks',
-    );
-  await preflightNativeCheckPlans(group.plan.projectRoot, options.checks);
+  if (!options.candidateId || !options.commitMessage.trim())
+    throw new Error('Group delivery requires an accepted candidate and a commit message');
   const storage = await deliveryStorage(group);
   return withRecoverableFileLock(storage.lease, async () => {
-    let journal = await storage.read();
-    if (!journal && options.refreshDeliveryId)
+    const saved = await storage.read();
+    if (!saved && options.refreshDeliveryId)
       throw new Error('Refresh requires an existing unfinished delivery');
     if (
-      journal &&
-      (journal.candidateId !== options.candidateId ||
-        journal.artifactRootRef !== artifactRootRef ||
-        journal.commitMessage !== options.commitMessage ||
-        canonicalHash('checks', journal.checks) !== canonicalHash('checks', options.checks))
+      options.refreshDeliveryId &&
+      saved?.id !== options.refreshDeliveryId &&
+      saved?.supersedes !== options.refreshDeliveryId
     )
-      throw new Error('Delivery request differs from the original candidate or check plan');
-    const exclusions = await readNativeInputExclusions(group.plan.projectRoot);
-    const excludedFromDelivery = (repository: string, ref: string) =>
-      exclusions.matches(`${repository}/${ref}`) || isNativeCodeGraphCachePath(ref);
-    const assertExcludedPathsUnchanged = (
-      entry: NativeWorkspaceGroup['plan']['repositories'][number],
-    ) => {
-      const changed = changedGitPaths(entry.worktreeRoot, [
-        'diff',
-        '--cached',
-        entry.baseCommit,
-      ]).find((ref) => excludedFromDelivery(entry.path, ref));
-      if (changed)
-        throw new Error(
-          `Changed file is excluded from accepted delivery inputs: ${entry.path}/${changed}`,
+      throw new Error('Refresh requires the exact unfinished delivery ID');
+    if (
+      saved &&
+      (saved.candidateId !== options.candidateId ||
+        saved.artifactRootRef !== artifactRootRef ||
+        saved.commitMessage !== options.commitMessage)
+    )
+      throw new Error('Delivery request differs from the original candidate');
+    if (saved?.status === 'merged') {
+      if (options.refreshDeliveryId)
+        throw new Error('Refresh requires the exact unfinished delivery ID');
+      assertTargetRefs(group, saved);
+      return saved;
+    }
+    let journal: ReportedDeliveryJournal;
+    if (saved) {
+      if (isLegacy(saved)) {
+        journal = await preserveLegacyJournal(
+          group,
+          saved,
+          storage.paths.runtimeDir,
+          options.validateCandidate,
         );
-    };
-    group.plan.repositories.forEach(assertExcludedPathsUnchanged);
-    if (!journal) {
+        await storage.save(journal);
+      } else {
+        journal = saved;
+      }
+    } else {
+      const accepted = await options.validateCandidate?.();
+      const trees = accepted?.trees ?? (await captureNativeWorkspaceDeliveryTrees(group));
+      const rootFiles =
+        accepted?.rootFiles ?? (await captureNativeWorkspaceDeliveryRootFiles(group));
       const id = randomUUID();
-      const repositories: RepositoryDelivery[] = [];
-      const localFiles: NativeWorkspaceSetup['files'] = [];
-      for (const entry of group.plan.repositories) {
+      const repositories = group.plan.repositories.map((entry, index): RepositoryDelivery => {
         runGitCommand(entry.worktreeRoot, [
           'merge-base',
           '--is-ancestor',
           entry.baseCommit,
           'HEAD',
         ]);
-        const input = await repositoryInput(
-          entry.worktreeRoot,
-          entry.path,
-          options.checks,
-          path.resolve(group.plan.projectRoot, artifactRootRef),
-          group.plan.setup?.files ?? [],
-        );
-        for (const file of group.plan.setup?.files ?? []) {
-          if (!file.path.startsWith(`${entry.path}/`)) continue;
-          const observed = input.files.find(
-            (item) => item.path === file.path.slice(entry.path.length + 1),
-          );
-          if (!observed) throw new Error(`Missing accepted local setup file: ${file.path}`);
-          localFiles.push({ path: file.path, hash: observed.hash });
-        }
         const checkout = targetCheckout(entry.sourceRoot, entry.targetBranch);
-        repositories.push({
+        return {
           path: entry.path,
-          sourceHash: input.contentHash,
-          sourceParent: runGitCommand(entry.worktreeRoot, ['rev-parse', 'HEAD']),
-          sourceTree: null,
+          sourceParent: trees[index].head,
+          sourceTree: trees[index].tree,
           sourceCommit: null,
-          targetCommit: runGitCommand(entry.sourceRoot, [
-            'rev-parse',
-            `refs/heads/${entry.targetBranch}`,
-          ]),
+          targetCommit: targetHead(entry),
           targetRoot: checkout.root,
           targetWorkspaceId: checkout.id,
           integrationWorkspaceId: null,
           integrationCommit: null,
           applied: false,
           applyStarted: false,
-        });
-      }
-      const rootFiles = await rootInput(
-        group.plan.projectRoot,
-        repositories,
-        options.checks,
-        artifactRootRef,
-      );
-      await options.validateCandidate?.();
+        };
+      });
       journal = {
-        schema: 'comet.native.workspace-group-delivery.v1',
+        schema: 'comet.native.workspace-group-delivery.v2',
         id,
         supersedes: null,
         groupHash: group.plan.hash,
@@ -544,58 +657,61 @@ export async function prepareNativeWorkspaceGroupDelivery(options: {
         checks: options.checks,
         artifactRootRef,
         rootFiles,
-        localFiles: (group.plan.setup?.files ?? []).map((file) =>
-          localFiles.find((observed) => observed.path === file.path)!,
-        ),
+        localFiles: accepted?.localFiles ?? (await captureNativeWorkspaceDeliverySetupFiles(group)),
         integrationRoot: path.join(
           path.dirname(group.plan.projectRoot),
           `.comet-integration-${id}`,
         ),
         integrationRootId: null,
         repositories,
-        checkAttempts: [],
-        integrationHash: null,
+        reports: [],
         planHash: null,
         status: 'preparing',
       };
       await storage.save(journal);
     }
-    await assertRootInput(group.plan.projectRoot, journal);
-    if (options.refreshDeliveryId && journal.supersedes !== options.refreshDeliveryId) {
-      if (journal.id !== options.refreshDeliveryId || journal.status === 'merged')
-        throw new Error('Refresh requires the exact unfinished delivery ID');
-      for (const attempt of journal.checkAttempts) {
-        if (
-          attempt.process &&
-          !attempt.result &&
-          (await inspectNativeCheckProcessTreeLiveness(
-            attempt.process.pid,
-            attempt.process.identity,
-          )) !== 'dead'
-        )
-          throw new Error(`Integration check may still be running: ${attempt.operationId}`);
+    await assertRootInput(group, journal);
+    await assertLocalInputs(journal, group.plan.projectRoot);
+    const save = () => storage.save(journal);
+    const trees = await captureNativeWorkspaceDeliveryTrees(group);
+    for (const [index, entry] of group.plan.repositories.entries()) {
+      const receipt = journal.repositories[index];
+      const { head } = trees[index];
+      if (repositoryHead(entry.worktreeRoot) !== head)
+        throw new Error(`Task branch changed during delivery preparation: ${entry.worktreeRoot}`);
+      if (trees[index].tree !== receipt.sourceTree)
+        throw new Error(
+          `Accepted task content changed: ${entry.worktreeRoot}; return to Native verification before delivery`,
+        );
+      if (receipt.sourceCommit) {
+        if (head !== receipt.sourceCommit)
+          throw new Error(`Task branch changed after delivery preparation: ${entry.worktreeRoot}`);
+        continue;
       }
+      const message = sourceCommitMessage(journal);
+      if (head !== receipt.sourceParent) {
+        if (!isOriginalSourceCommit(entry.worktreeRoot, head, receipt, journal))
+          throw new Error(`Unrecorded task commit differs from delivery: ${entry.worktreeRoot}`);
+      } else {
+        const stage = await nativeWorkspaceDeliveryPaths(group, entry);
+        if (stage.length)
+          runGitCommand(entry.worktreeRoot, ['--literal-pathspecs', 'add', '-A', '--', ...stage]);
+        if (runGitCommand(entry.worktreeRoot, ['write-tree']) !== receipt.sourceTree)
+          throw new Error(`Staged tree changed during delivery preparation: ${entry.worktreeRoot}`);
+        if (receipt.sourceTree !== gitTree(entry.worktreeRoot, head))
+          runGitCommand(entry.worktreeRoot, ['commit', '-m', message]);
+      }
+      receipt.sourceCommit = repositoryHead(entry.worktreeRoot);
+      if (gitTree(entry.worktreeRoot, receipt.sourceCommit) !== receipt.sourceTree)
+        throw new Error(`Commit changed accepted task inputs: ${entry.worktreeRoot}`);
+      await save();
+    }
+    if (options.refreshDeliveryId && journal.supersedes !== options.refreshDeliveryId) {
+      await assertSource(group, journal);
       const repositories: RepositoryDelivery[] = [];
       for (const [index, entry] of group.plan.repositories.entries()) {
         const receipt = journal.repositories[index];
-        if (
-          !receipt.sourceCommit ||
-          runGitCommand(entry.worktreeRoot, ['rev-parse', 'HEAD']) !== receipt.sourceCommit ||
-          (
-            await repositoryInput(
-              entry.worktreeRoot,
-              entry.path,
-              journal.checks,
-              path.resolve(group.plan.projectRoot, journal.artifactRootRef),
-              journal.localFiles,
-            )
-          ).contentHash !== receipt.sourceHash
-        )
-          throw new Error(`Refresh requires the unchanged prepared candidate: ${entry.path}`);
-        const targetCommit = runGitCommand(entry.sourceRoot, [
-          'rev-parse',
-          `refs/heads/${entry.targetBranch}`,
-        ]);
+        const targetCommit = targetHead(entry);
         if (receipt.applied || (receipt.applyStarted && targetCommit !== receipt.targetCommit)) {
           try {
             runGitCommand(entry.sourceRoot, [
@@ -627,15 +743,15 @@ export async function prepareNativeWorkspaceGroupDelivery(options: {
           applyStarted: false,
         });
       }
-      // Preserve failed checks, conflicts and partial publication receipts for diagnosis.
       await atomicWriteJson(
         path.join(storage.paths.runtimeDir, 'group-delivery/history', `${journal.id}.json`),
         journal,
         { containedRoot: storage.paths.runtimeDir },
       );
       const id = randomUUID();
+      const { legacyPlanHash: _legacyPlanHash, ...rest } = journal;
       journal = {
-        ...journal,
+        ...rest,
         id,
         supersedes: journal.id,
         repositories,
@@ -644,97 +760,11 @@ export async function prepareNativeWorkspaceGroupDelivery(options: {
           `.comet-integration-${id}`,
         ),
         integrationRootId: null,
-        integrationHash: null,
         planHash: null,
-        checkAttempts: [],
+        reports: [],
         status: 'preparing',
       };
       await storage.save(journal);
-    }
-    const save = () => storage.save(journal!);
-    for (const [index, entry] of group.plan.repositories.entries()) {
-      const receipt = journal.repositories[index];
-      const input = await repositoryInput(
-        entry.worktreeRoot,
-        entry.path,
-        journal.checks,
-        path.resolve(group.plan.projectRoot, journal.artifactRootRef),
-        journal.localFiles,
-      );
-      if (input.exclusionHash !== exclusions.hash)
-        throw new Error(
-          'Native input exclusions changed during delivery; verify the current candidate',
-        );
-      if (input.contentHash !== receipt.sourceHash)
-        throw new Error(
-          `Accepted task content changed: ${entry.worktreeRoot}; return to Native verification before delivery`,
-        );
-      const head = runGitCommand(entry.worktreeRoot, ['rev-parse', 'HEAD']);
-      if (receipt.sourceCommit) {
-        if (head !== receipt.sourceCommit)
-          throw new Error(`Task branch changed after delivery preparation: ${entry.worktreeRoot}`);
-        continue;
-      }
-      const message = `${journal.commitMessage}\n\nComet-Delivery: ${journal.id}\nComet-Candidate: ${journal.candidateId}`;
-      if (head !== receipt.sourceParent) {
-        if (
-          !receipt.sourceTree ||
-          runGitCommand(entry.worktreeRoot, ['show', '-s', '--format=%P', head]) !==
-            receipt.sourceParent ||
-          runGitCommand(entry.worktreeRoot, ['rev-parse', `${head}^{tree}`]) !==
-            receipt.sourceTree ||
-          runGitCommand(entry.worktreeRoot, ['show', '-s', '--format=%B', head]) !== message
-        )
-          throw new Error(`Unrecorded task commit differs from delivery: ${entry.worktreeRoot}`);
-      } else {
-        assertExcludedPathsUnchanged(entry);
-        const changed = exclusions.hash
-          ? [
-              ...new Set([
-                ...trackedDeliveryChanges(entry.worktreeRoot),
-                ...untrackedDeliveryPaths(entry.worktreeRoot),
-              ]),
-            ]
-          : gitStatusPaths(entry.worktreeRoot);
-        const tracked = new Set(runGitCommand(entry.worktreeRoot, ['ls-files', '-z']).split('\0'));
-        const accepted = new Set(
-          input.files.filter((file) => !file.generated).map((file) => file.path),
-        );
-        const stage: string[] = [];
-        for (const ref of changed) {
-          if (excludedFromDelivery(entry.path, ref)) continue;
-          if (
-            accepted.has(ref) ||
-            (tracked.has(ref) && !(await directoryExists(path.join(entry.worktreeRoot, ref))))
-          )
-            stage.push(ref);
-          else if (tracked.has(ref))
-            throw new Error(
-              `Changed tracked file is outside accepted delivery inputs: ${entry.path}/${ref}`,
-            );
-        }
-        if (stage.length)
-          runGitCommand(entry.worktreeRoot, ['--literal-pathspecs', 'add', '-A', '--', ...stage]);
-        receipt.sourceTree = runGitCommand(entry.worktreeRoot, ['write-tree']);
-        await save();
-        if (receipt.sourceTree !== runGitCommand(entry.worktreeRoot, ['rev-parse', 'HEAD^{tree}']))
-          runGitCommand(entry.worktreeRoot, ['commit', '-m', message]);
-      }
-      receipt.sourceCommit = runGitCommand(entry.worktreeRoot, ['rev-parse', 'HEAD']);
-      if (
-        runGitCommand(entry.worktreeRoot, ['rev-parse', 'HEAD^{tree}']) !== receipt.sourceTree ||
-        (
-          await repositoryInput(
-            entry.worktreeRoot,
-            entry.path,
-            journal.checks,
-            path.resolve(group.plan.projectRoot, journal.artifactRootRef),
-            journal.localFiles,
-          )
-        ).contentHash !== receipt.sourceHash
-      )
-        throw new Error(`Commit changed accepted task inputs: ${entry.worktreeRoot}`);
-      await save();
     }
     if (journal.status !== 'preparing') {
       await registerWorkspaceGroupIntegration(
@@ -742,11 +772,8 @@ export async function prepareNativeWorkspaceGroupDelivery(options: {
         journal.integrationRoot,
         journal.id,
       );
-      if (
-        (await integrationFingerprint(journal, group.plan.projectRoot)) !== journal.integrationHash
-      )
-        throw new Error('Verified integration inputs changed; prepare a new integration round');
-      await assertDeliveryChecks(journal, storage.paths.runtimeDir);
+      await assertIntegration(group, journal);
+      assertTargetRefs(group, journal);
       return journal;
     }
     if (!journal.integrationRootId) {
@@ -816,19 +843,14 @@ export async function prepareNativeWorkspaceGroupDelivery(options: {
       if (resolveWorkspaceIdentity(root).workspaceId !== receipt.integrationWorkspaceId)
         throw new Error(`Integration worktree was replaced: ${root}`);
       if (!receipt.integrationCommit) {
-        if (
-          exclusions.hash
-            ? trackedDeliveryChanges(root).length > 0 || untrackedDeliveryPaths(root).length > 0
-            : !gitWorktreeIsClean(root)
-        )
+        if (!gitWorktreeIsClean(root))
           throw new Error(
             `Integration has unresolved changes: ${root}; inspect git status and preserve conflict evidence`,
           );
         const head = runGitCommand(root, ['rev-parse', 'HEAD']);
         if (
           head === receipt.targetCommit &&
-          receipt.sourceTree !==
-            runGitCommand(entry.sourceRoot, ['rev-parse', `${entry.baseCommit}^{tree}`])
+          receipt.sourceTree !== gitTree(entry.sourceRoot, entry.baseCommit)
         )
           runGitCommand(root, [
             'merge',
@@ -847,76 +869,175 @@ export async function prepareNativeWorkspaceGroupDelivery(options: {
         await save();
       }
     }
-    if (group.plan.setup) {
-      let beforeSetup: string | undefined;
-      await prepareNativeWorkspaceSetup({
+    if (group.plan.setup && (!journal.legacyRootFiles || journal.supersedes)) {
+      const setup = await prepareNativeWorkspaceSetup({
         sourceRoot: group.plan.projectRoot,
         targetRoot: journal.integrationRoot,
         repositories: journal.repositories,
         setup: { ...group.plan.setup, files: journal.localFiles },
-        beforeChecks: async () => {
-          beforeSetup = await integrationFingerprint(journal!, group.plan.projectRoot);
-        },
       });
-      if (beforeSetup !== (await integrationFingerprint(journal, group.plan.projectRoot)))
-        throw new Error(
-          'Workspace setup changed integration inputs; preserve the prepared candidate before retrying',
-        );
+      for (const check of setup?.checks ?? []) {
+        const id = `setup:${check.id}`;
+        if (!journal.checks.some((entry) => entry.id === id))
+          journal.checks.push({
+            id,
+            name: check.name,
+            cwdRef: check.cwdRef,
+            executable: check.executable,
+            argv: check.argv,
+          });
+      }
     }
-    await preflightNativeCheckPlans(journal.integrationRoot, journal.checks);
-    const before = await integrationFingerprint(journal, group.plan.projectRoot);
-    for (const plan of journal.checks) {
-      const previous = journal.checkAttempts.filter((attempt) => attempt.id === plan.id).at(-1);
-      if (previous?.result?.status === 'passed' && previous.inputHash === before) continue;
-      if (
-        previous?.process &&
-        !previous.result &&
-        (await inspectNativeCheckProcessTreeLiveness(
-          previous.process.pid,
-          previous.process.identity,
-        )) !== 'dead'
-      )
-        throw new Error(
-          `Integration check may still be running: ${previous.operationId}; inspect the recorded process before retrying`,
-        );
-      const attempt: DeliveryCheck = {
-        id: plan.id,
-        operationId: randomUUID(),
-        inputHash: before,
-        process: null,
-        result: null,
-      };
-      journal.checkAttempts.push(attempt);
-      journal.integrationHash = before;
-      await save();
-      attempt.result = await executeNativeCheck({
-        projectRoot: journal.integrationRoot,
-        runtimeDir: storage.paths.runtimeDir,
-        operationId: attempt.operationId,
-        plan,
-        onSpawn: async (process) => {
-          attempt.process = {
-            pid: process.pid,
-            ...(process.identity === undefined ? {} : { identity: process.identity }),
-          };
-          await save();
-        },
-      });
-      await save();
-      if (attempt.result.status !== 'passed')
-        throw new Error(
-          `Integration check failed: ${plan.id}; log: ${attempt.result.logRef}; retry the same delivery after correcting the task and verifying its candidate`,
-        );
-      if ((await integrationFingerprint(journal, group.plan.projectRoot)) !== before)
-        throw new Error(
-          'Integration checks changed implementation inputs; no target branches were updated',
-        );
-    }
-    journal.integrationHash = before;
-    await assertDeliveryChecks(journal, storage.paths.runtimeDir);
-    journal.status = 'ready';
-    journal.planHash = deliveryHash(journal);
+    await assertIntegration(group, journal);
+    assertTargetRefs(group, journal);
+    journal.status = 'awaiting-checks';
     await save();
+    return journal;
+  });
+}
+
+function readDeliveryReport(value: unknown): DeliveryCheckReport {
+  const input = value as DeliveryCheckReport;
+  if (
+    !input ||
+    typeof input.deliveryId !== 'string' ||
+    typeof input.planHash !== 'string' ||
+    !Array.isArray(input.checks) ||
+    input.checks.some(
+      (check) =>
+        !check ||
+        typeof check.id !== 'string' ||
+        !check.id.trim() ||
+        (check.command !== undefined && typeof check.command !== 'string') ||
+        (check.actualCommand !== undefined &&
+          (!check.actualCommand ||
+            typeof check.actualCommand.executable !== 'string' ||
+            !check.actualCommand.executable.trim() ||
+            !Array.isArray(check.actualCommand.argv) ||
+            check.actualCommand.argv.some((argument) => typeof argument !== 'string'))) ||
+        typeof check.cwd !== 'string' ||
+        !path.isAbsolute(check.cwd) ||
+        !['passed', 'failed', 'not-run'].includes(check.result) ||
+        (check.note !== undefined && typeof check.note !== 'string'),
+    ) ||
+    new Set(input.checks.map((check) => check.id)).size !== input.checks.length ||
+    (input.noChecksReason !== undefined && typeof input.noChecksReason !== 'string') ||
+    (input.legacyReconciliation !== undefined && typeof input.legacyReconciliation !== 'string')
+  )
+    throw new Error('Invalid integration check report');
+  return {
+    deliveryId: input.deliveryId,
+    planHash: input.planHash,
+    checks: input.checks.map(({ id, command, actualCommand, cwd, result, note }) => ({
+      id,
+      ...(actualCommand
+        ? {
+            actualCommand: {
+              executable: actualCommand.executable,
+              argv: actualCommand.argv,
+            },
+          }
+        : command?.trim()
+          ? { command }
+          : {}),
+      cwd,
+      result,
+      ...(note === undefined ? {} : { note }),
+    })),
+    ...(input.noChecksReason?.trim() ? { noChecksReason: input.noChecksReason.trim() } : {}),
+    ...(input.legacyReconciliation?.trim()
+      ? { legacyReconciliation: input.legacyReconciliation.trim() }
+      : {}),
+  };
+}
+
+export async function reportNativeWorkspaceGroupDelivery(
+  group: NativeWorkspaceGroup,
+  value: unknown,
+): Promise<ReportedDeliveryJournal> {
+  const report = readDeliveryReport(value);
+  await assertNativeWorkspaceGroupCurrent(group);
+  const storage = await deliveryStorage(group);
+  return withRecoverableFileLock(storage.lease, async () => {
+    const journal = await storage.read();
+    if (
+      !journal ||
+      isLegacy(journal) ||
+      !['awaiting-checks', 'ready'].includes(journal.status) ||
+      report.deliveryId !== journal.id
+    )
+      throw new Error('Integration report is for a different or closed delivery');
+    await assertSource(group, journal);
+    await assertIntegration(group, journal);
+    assertTargetRefs(group, journal);
+    const latest = journal.reports.at(-1);
+    if (
+      latest &&
+      canonicalHash('delivery-report', latest) === canonicalHash('delivery-report', report)
+    )
+      return journal;
+    if (report.planHash !== deliveryHash(journal))
+      throw new Error('Integration report does not match the current delivery plan');
+    if (
+      journal.legacyUnconfirmed?.length &&
+      !journal.reports.some((entry) => entry.legacyReconciliation) &&
+      !report.legacyReconciliation
+    )
+      throw new Error(
+        'Reconcile the original integration execution before submitting a new result',
+      );
+    const requirements = new Map(journal.checks.map((check) => [check.id, check]));
+    for (const check of report.checks) {
+      const relative = path.relative(journal.integrationRoot, check.cwd);
+      const requirement = requirements.get(check.id);
+      if (
+        path.isAbsolute(relative) ||
+        relative === '..' ||
+        relative.startsWith(`..${path.sep}`) ||
+        (requirement?.cwdRef !== undefined &&
+          path.resolve(journal.integrationRoot, requirement.cwdRef) !== path.resolve(check.cwd))
+      )
+        throw new Error(`Integration check ran outside its prepared workspace: ${check.id}`);
+      if (requirement?.executable !== undefined) {
+        const actual = check.actualCommand;
+        const expectedArgs = requirement.argv ?? [];
+        if (
+          !actual ||
+          actual.executable !== requirement.executable ||
+          actual.argv.length !== expectedArgs.length ||
+          actual.argv.some((argument, index) => argument !== expectedArgs[index])
+        )
+          throw new Error(
+            `Integration check did not report its required executable and arguments: ${check.id}`,
+          );
+      } else if (!check.command?.trim()) {
+        throw new Error(`Integration check must report the actual command: ${check.id}`);
+      }
+      if (relative) {
+        const directory = await inspectProtectedProjectPath(
+          journal.integrationRoot,
+          relative.replaceAll(path.sep, '/'),
+          { expected: 'directory', label: 'Integration check working directory' },
+        );
+        if (!directory.exists)
+          throw new Error(`Integration check working directory is missing: ${check.cwd}`);
+      }
+    }
+    const missing = journal.checks.filter(
+      (check) => !report.checks.some((result) => result.id === check.id),
+    );
+    if (missing.length)
+      throw new Error(
+        `Integration report is missing required checks: ${missing.map((check) => check.id).join(', ')}`,
+      );
+    if (!report.checks.length && !report.noChecksReason)
+      throw new Error('Report actual integration checks or explain why none are required');
+    journal.reports.push(report);
+    journal.status = report.checks.every((check) => check.result === 'passed')
+      ? 'ready'
+      : 'awaiting-checks';
+    journal.planHash = journal.status === 'ready' ? deliveryHash(journal) : null;
+    await storage.save(journal);
     return journal;
   });
 }
@@ -930,8 +1051,20 @@ export async function applyNativeWorkspaceGroupDelivery(
   const storage = await deliveryStorage(group);
   return withRecoverableFileLock(storage.lease, async () => {
     const journal = await storage.read();
-    if (!journal || journal.status === 'preparing' || journal.planHash !== expectedPlanHash)
+    if (
+      !journal ||
+      journal.planHash !== expectedPlanHash ||
+      !['ready', 'applying', 'merged'].includes(journal.status)
+    )
       throw new Error('Prepare and verify the exact delivery plan before applying it');
+    if (journal.status === 'merged') {
+      assertTargetRefs(group, journal);
+      return journal;
+    }
+    if (isLegacy(journal))
+      throw new Error(
+        'Prepare the original delivery and submit a current integration report before continuing',
+      );
     const lockFiles = group.plan.repositories
       .map((entry) =>
         path.join(
@@ -944,50 +1077,14 @@ export async function applyNativeWorkspaceGroupDelivery(
     const apply = async (index: number): Promise<NativeWorkspaceGroupDelivery> => {
       if (index < lockFiles.length)
         return withRecoverableFileLock(lockFiles[index], () => apply(index + 1));
-      await assertRootInput(group.plan.projectRoot, journal);
-      if (
-        (await integrationFingerprint(journal, group.plan.projectRoot)) !== journal.integrationHash
-      )
-        throw new Error('Integration inputs changed after verification');
-      await assertDeliveryChecks(journal, storage.paths.runtimeDir);
+      await assertSource(group, journal);
+      await assertIntegration(group, journal);
+      assertTargetRefs(group, journal);
       for (const [position, entry] of group.plan.repositories.entries()) {
         const receipt = journal.repositories[position];
-        if (
-          (
-            await repositoryInput(
-              entry.worktreeRoot,
-              entry.path,
-              journal.checks,
-              path.resolve(group.plan.projectRoot, journal.artifactRootRef),
-              journal.localFiles,
-            )
-          ).contentHash !== receipt.sourceHash ||
-          runGitCommand(entry.worktreeRoot, ['rev-parse', 'HEAD']) !== receipt.sourceCommit
-        )
-          throw new Error(`Task candidate changed before merge: ${entry.path}`);
-        const current = runGitCommand(entry.sourceRoot, [
-          'rev-parse',
-          `refs/heads/${entry.targetBranch}`,
-        ]);
-        if (receipt.applied || current === receipt.integrationCommit) {
-          runGitCommand(entry.sourceRoot, [
-            'merge-base',
-            '--is-ancestor',
-            receipt.integrationCommit!,
-            current,
-          ]);
-          if (journal.status !== 'merged' && current !== receipt.integrationCommit)
-            throw new Error(
-              `Delivery target moved after partial publication: ${entry.path}:${entry.targetBranch}; refresh integration and rerun its checks`,
-            );
-          continue;
-        }
+        if (receipt.applied || targetHead(entry) === receipt.integrationCommit) continue;
         const checkout = targetCheckout(entry.sourceRoot, entry.targetBranch);
-        if (
-          current !== receipt.targetCommit ||
-          checkout.root !== receipt.targetRoot ||
-          checkout.id !== receipt.targetWorkspaceId
-        )
+        if (checkout.root !== receipt.targetRoot || checkout.id !== receipt.targetWorkspaceId)
           throw new Error(
             `Delivery target moved: ${entry.path}:${entry.targetBranch}; rebuild integration and rerun its checks`,
           );

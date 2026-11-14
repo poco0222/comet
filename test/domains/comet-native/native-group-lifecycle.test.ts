@@ -1,3 +1,4 @@
+import '../../helpers/isolated-agent-home.js';
 import { promises as fs } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -107,7 +108,22 @@ it.each(['source', 'bundle', ...(packageRoot ? ['package'] : [])])(
         cancelled?: boolean;
         selected?: string;
         delivery: NativeWorkspaceGroupDelivery;
-        next: { commandArgs: string[] };
+        next: {
+          commandArgs: string[];
+          resultTemplate?: {
+            deliveryId: string;
+            planHash: string;
+            checks: Array<{ id: string; cwd: string; executable?: string; argv?: string[] }>;
+          };
+        };
+        resultTemplate?: { output: { deliveryTreeBinding?: string; deliverySpecs?: unknown } };
+        preparation?: {
+          setup?: {
+            id: string;
+            workspaceId: string;
+            checks: Array<{ id: string; executable: string; argv: string[]; cwd: string }>;
+          };
+        };
       };
     };
     const setupFile = path.join(temporary, 'workspace-setup.json');
@@ -131,7 +147,26 @@ it.each(['source', 'bundle', ...(packageRoot ? ['package'] : [])])(
         ],
       }),
     );
-    await ok('new', 'feature', '--isolation', 'worktree', '--setup', setupFile);
+    const setup = (await ok('new', 'feature', '--isolation', 'worktree', '--setup', setupFile))
+      .preparation!.setup!;
+    const setupReport = path.join(temporary, 'setup-report.json');
+    expect(setup.checks).toHaveLength(1);
+    for (const check of setup.checks) {
+      const executed = spawnSync(check.executable, check.argv, {
+        cwd: check.cwd,
+        encoding: 'utf8',
+      });
+      expect(executed.status, executed.stderr).toBe(0);
+    }
+    await fs.writeFile(
+      setupReport,
+      JSON.stringify({
+        id: setup.id,
+        workspaceId: setup.workspaceId,
+        checks: setup.checks.map(({ id, cwd }) => ({ id, cwd, result: 'passed' })),
+      }),
+    );
+    await ok('new', 'feature', '--isolation', 'worktree', '--setup-report', setupReport);
     await ok('new', 'other', '--isolation', 'worktree');
     expect(
       (await invoke('new', 'compat', '--runtime', 'compat', '--isolation', 'worktree')).output
@@ -230,7 +265,6 @@ Read all three repositories in one check.
       decisionId: 'fixture-shape-approved',
       choice: 'approved',
     });
-    await submitShape('revalidate');
     const claimed = await ok('next', 'feature', '--session', 'fixture-builder');
     expect(claimed.phase).toBe('build');
     run = await runtime.inspect('feature');
@@ -241,16 +275,11 @@ Read all three repositories in one check.
       path.join(root, 'check.cjs'),
       'const fs=require("node:fs"); for(const r of ["backend","frontend"]) if(fs.readFileSync(r+"/source.txt","utf8")!=="new\\n") process.exit(1); if(fs.readFileSync("mobile/source.txt","utf8")!=="old\\n") process.exit(1); for(const r of ["backend","frontend","mobile"]){if(fs.readFileSync(r+"/.env","utf8")!=="local-fixture-config"||fs.readFileSync(r+"/node_modules/ready","utf8")!=="ok")process.exit(2)}',
     );
+    const checkName = 'Read all three repositories';
+    const checked = spawnSync(process.execPath, ['check.cjs'], { cwd: root, encoding: 'utf8' });
+    expect(checked.status, checked.stderr).toBe(0);
     const checks = [
-      {
-        id: 'combined',
-        name: 'Read all three repositories',
-        executable: process.execPath,
-        argv: ['check.cjs'],
-        cwdRef: '.',
-        timeoutMs: 10000,
-        repeatable: true,
-      },
+      { name: checkName, result: 'passed', note: 'node check.cjs passed in the task workspace' },
     ];
     await fs.writeFile(
       resultFile,
@@ -259,9 +288,8 @@ Read all three repositories in one check.
         output: {
           summary: 'Updated backend and frontend.',
           addressedAcceptanceIds: ['A1'],
-          checks: [],
+          checks,
           knownLimits: [],
-          verificationChecks: checks,
         },
       }),
     );
@@ -278,9 +306,24 @@ Read all three repositories in one check.
       'independent',
     );
     run = await runtime.inspect('feature');
-    await ok('next', 'feature', '--session', 'fixture-verifier');
+    const verifier = await ok('next', 'feature', '--session', 'fixture-verifier');
+    expect(verifier.resultTemplate?.output.deliveryTreeBinding).toMatch(/^[0-9a-f]{64}$/u);
     run = await runtime.inspect('feature');
     const state = parseNativePortableState(run.state);
+    const verifyStatus = await invoke('status', 'feature', '--details');
+    const active = (
+      verifyStatus.dispatch.data as {
+        activeActions: Array<{ stepId: string; resultRequest: unknown }>;
+      }
+    ).activeActions;
+    expect(active.find(({ stepId }) => stepId === 'verify.verifier')?.resultRequest).toMatchObject({
+      result: {
+        output: {
+          deliveryTreeBinding: verifier.resultTemplate!.output.deliveryTreeBinding,
+          deliverySpecs: verifier.resultTemplate!.output.deliverySpecs,
+        },
+      },
+    });
     await fs.writeFile(
       resultFile,
       JSON.stringify({
@@ -288,6 +331,9 @@ Read all three repositories in one check.
         output: {
           candidateId: state.builder_handoff!.candidate_id,
           verifierExecutionRef: 'fixture-verifier',
+          deliveryTreeBinding: verifier.resultTemplate!.output.deliveryTreeBinding,
+          deliverySpecs: verifier.resultTemplate!.output.deliverySpecs,
+          checks,
           response: {
             kind: 'final-result',
             result: {
@@ -308,7 +354,7 @@ Read all three repositories in one check.
         },
       }),
     );
-    const reported = await ok(
+    const verifierArgs = [
       'next',
       'feature',
       '--result',
@@ -317,12 +363,30 @@ Read all three repositories in one check.
       run.actions.at(-1)!.id,
       '--session',
       'fixture-verifier',
-    );
+    ];
+    const acceptedFile = path.join(root, 'frontend/source.txt');
+    await fs.writeFile(acceptedFile, 'different before reporting\n');
+    const drift = await invoke(...verifierArgs);
+    expect(drift.output.exitCode).not.toBe(0);
+    expect(drift.output.stdout + drift.output.stderr).toContain('delivery inputs differ');
+    await fs.writeFile(acceptedFile, 'new\n');
+    await fs.mkdir(path.join(root, 'frontend/.codegraph'), { recursive: true });
+    await fs.writeFile(path.join(root, 'frontend/.codegraph/daemon.pid'), 'disposable');
+    const reported = await ok(...verifierArgs);
+    await fs.rm(path.join(root, 'frontend/.codegraph'), { recursive: true });
     expect(reported.status).toBe('await-user');
     expect((await invoke('deliver', 'feature')).output.exitCode).not.toBe(0);
     const acceptanceArgs = [...reported.next.commandArgs].slice(2);
     acceptanceArgs[acceptanceArgs.indexOf('--summary') + 1] =
       'Fixture user accepts the verified result.';
+    await fs.writeFile(acceptedFile, 'different before approval\n');
+    const staleAcceptance = await command(acceptanceArgs);
+    expect(staleAcceptance.output.exitCode).not.toBe(0);
+    expect(staleAcceptance.output.stdout + staleAcceptance.output.stderr).toContain(
+      'delivery inputs changed',
+    );
+    expect((await runtime.inspect('feature')).waits.at(-1)?.status).toBe('pending');
+    await fs.writeFile(acceptedFile, 'new\n');
     const completed = await command(acceptanceArgs);
     expect(completed.output.exitCode, completed.output.stdout).toBe(0);
     expect((await runtime.inspect('feature')).status).toBe('completed');
@@ -336,21 +400,43 @@ Read all three repositories in one check.
     );
     runGitCommand(mobile.sourceRoot, ['add', 'source.txt']);
     runGitCommand(mobile.sourceRoot, ['commit', '-m', 'parallel target change']);
-    const failed = await invoke('deliver', 'feature');
-    expect(failed.output.exitCode).toBe(73);
-    const failedDelivery = (failed.dispatch.data as { delivery: NativeWorkspaceGroupDelivery })
-      .delivery;
-    expect(failedDelivery.checkAttempts.at(-1)?.result?.status).toBe('failed');
+    const reportIntegration = async (prepared: Awaited<ReturnType<typeof ok>>) => {
+      expect(prepared.delivery.status).toBe('awaiting-checks');
+      expect(prepared.delivery.planHash).toBeNull();
+      const template = prepared.next.resultTemplate!;
+      expect(template.checks).toHaveLength(2);
+      const results = template.checks.map((entry) => {
+        const executable = entry.executable ?? process.execPath;
+        const argv = entry.argv ?? ['check.cjs'];
+        const result = spawnSync(executable, argv, { cwd: entry.cwd, encoding: 'utf8' });
+        if (result.error) throw result.error;
+        return {
+          id: entry.id,
+          cwd: entry.cwd,
+          command: JSON.stringify([executable, ...argv]),
+          ...(entry.executable ? { actualCommand: { executable, argv } } : {}),
+          result: result.status === 0 ? 'passed' : 'failed',
+          note: `actual exit ${result.status}`,
+        };
+      });
+      const file = path.join(temporary, 'integration-report.json');
+      await fs.writeFile(file, JSON.stringify({ ...template, checks: results }));
+      return (await ok('deliver', 'feature', '--checks', file)).delivery;
+    };
+    const failedDelivery = await reportIntegration(await ok('deliver', 'feature'));
+    expect(failedDelivery).toMatchObject({
+      status: 'awaiting-checks',
+      reports: [
+        { checks: expect.arrayContaining([expect.objectContaining({ result: 'failed' })]) },
+      ],
+    });
     await fs.writeFile(path.join(failedDelivery.integrationRoot, 'mobile/source.txt'), 'old\n');
     const uncommitted = await invoke('deliver', 'feature');
     expect(uncommitted.output.exitCode).toBe(73);
     expect(uncommitted.output.stdout + uncommitted.output.stderr).toContain(
       'Integration inputs are not committed',
     );
-    expect(
-      (uncommitted.dispatch.data as { delivery: NativeWorkspaceGroupDelivery }).delivery
-        .checkAttempts,
-    ).toEqual(failedDelivery.checkAttempts);
+    expect(uncommitted.dispatch.data).toMatchObject({ delivery: failedDelivery });
     await fs.writeFile(
       path.join(failedDelivery.integrationRoot, 'mobile/source.txt'),
       'parallel incompatible target\n',
@@ -358,10 +444,10 @@ Read all three repositories in one check.
     await fs.writeFile(path.join(mobile.sourceRoot, 'source.txt'), 'old\n');
     runGitCommand(mobile.sourceRoot, ['add', 'source.txt']);
     runGitCommand(mobile.sourceRoot, ['commit', '-m', 'repair parallel target']);
-    let ready = (await ok('deliver', 'feature', '--refresh', failedDelivery.id))
-      .delivery as NativeWorkspaceGroupDelivery;
+    let ready = await reportIntegration(
+      await ok('deliver', 'feature', '--refresh', failedDelivery.id),
+    );
     expect(ready.status).toBe('ready');
-    expect(ready.checkAttempts.at(-1)?.result?.status).toBe('passed');
     const hookScript =
       boundary === 'package'
         ? path.join(packageRoot!, 'assets/skills/comet/scripts/comet-hook-router.mjs')
@@ -404,8 +490,9 @@ Read all three repositories in one check.
     const recovery = moved.dispatch.data as { refresh: { commandArgs: string[] } };
     const refreshed = await command(recovery.refresh.commandArgs.slice(2));
     expect(refreshed.output.exitCode, refreshed.output.stdout).toBe(0);
-    const nextDelivery = (refreshed.dispatch.data as { delivery: NativeWorkspaceGroupDelivery })
-      .delivery;
+    const nextDelivery = await reportIntegration(
+      refreshed.dispatch.data as Awaited<ReturnType<typeof ok>>,
+    );
     expect(nextDelivery.id).not.toBe(ready.id);
     ready = nextDelivery;
     const frontend = plan.repositories[1];
@@ -438,9 +525,11 @@ Read all three repositories in one check.
     const partialRecovery = stalePartial.dispatch.data as { refresh: { commandArgs: string[] } };
     const freshPartial = await command(partialRecovery.refresh.commandArgs.slice(2));
     expect(freshPartial.output.exitCode, freshPartial.output.stdout).toBe(0);
-    const freshDelivery = (freshPartial.dispatch.data as { delivery: NativeWorkspaceGroupDelivery })
-      .delivery;
-    expect(freshDelivery.checkAttempts[0].operationId).not.toBe(ready.checkAttempts[0].operationId);
+    const freshDelivery = await reportIntegration(
+      freshPartial.dispatch.data as Awaited<ReturnType<typeof ok>>,
+    );
+    expect(freshDelivery.id).not.toBe(ready.id);
+    expect(freshDelivery.planHash).not.toBe(ready.planHash);
     ready = freshDelivery;
     const deliveryStatus = await invoke('status', 'feature', '--details');
     expect(deliveryStatus.output.exitCode, deliveryStatus.output.stdout).toBe(0);
@@ -625,8 +714,20 @@ Read all three repositories in one check.
       'next-task',
     );
     const unapproved = await invoke('next', 'next-task', '--session', 'fixture-builder');
-    expect(unapproved.output.exitCode).toBe(64);
-    expect(unapproved.output.stdout + unapproved.output.stderr).toContain('Shape');
+    expect(unapproved.output.exitCode, unapproved.output.stdout).toBe(0);
+    expect(unapproved.dispatch.data).toMatchObject({
+      phase: 'shape',
+      task: { role: 'shape', status: 'running', session: 'fixture-builder' },
+    });
+    const { runtime: nextRuntime } = await loadOwnedNativeSdkRuntime(
+      (await readNativeWorkspaceGroupPlan(coordinator, 'next-task'))!.projectRoot,
+      'next-task',
+    );
+    const nextRun = await nextRuntime.inspect('next-task');
+    expect(nextRun.actions.some((action) => action.stepId === 'build.builder')).toBe(false);
+    expect(
+      nextRun.waits.some((wait) => wait.stepId === 'shape.confirm' && wait.status === 'resolved'),
+    ).toBe(false);
   },
   // Windows CI 到最后的会话恢复断言已用约 600 秒，保留全部交付与恢复检查。
   process.platform === 'win32' ? 900_000 : 180_000,

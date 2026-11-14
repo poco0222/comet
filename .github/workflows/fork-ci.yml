@@ -211,13 +211,30 @@ jobs:
       - run: pnpm test:native-parallel
       - name: Workspace Runtime identity and storage regressions
         run: >-
-          pnpm exec vitest run test/platform/workspace-runtime.test.ts test/domains/workflow-contract/workspace-runtime.test.ts
+          pnpm exec vitest run
+          test/platform/workspace-runtime.test.ts
+          test/domains/workflow-contract/workspace-runtime-entrypoints.test.ts
+          test/domains/workflow-contract/workspace-runtime-current-business.test.ts
       - name: DSH Hook installation and denial regressions
         run: >-
           pnpm exec vitest run test/domains/skill/dsh-hooks.test.ts test/platform/dsh-profiles.test.ts test/domains/comet-entry/hook-adapter.test.ts test/domains/comet-entry/hook-router-runtime.test.ts
-      - name: Native check process and recovery regressions
+      - name: CLI-owned process cleanup regressions
         run: >-
-          pnpm exec vitest run test/platform/process/process-identity.test.ts test/platform/process/spawn-command.test.ts test/platform/process/node-cli-command.test.ts test/platform/process/owned-command-termination.test.ts test/domains/comet-native/native-check-registration.test.ts test/domains/comet-native/native-check-executor.test.ts test/domains/comet-native/native-check-executor-termination.test.ts test/domains/comet-native/native-portable-check-termination.test.ts test/domains/comet-native/native-sdk-check-termination.test.ts test/domains/comet-native/native-supervisor-check-process.test.ts test/domains/comet-native/native-supervisor-integration-execution.test.ts test/domains/comet-native/native-supervisor-legacy-diagnostics.test.ts --maxWorkers=1
+          pnpm exec vitest run
+          test/platform/process/process-identity.test.ts
+          test/platform/process/spawn-command.test.ts
+          test/platform/process/node-cli-command.test.ts
+          test/platform/process/owned-command-termination.test.ts
+          test/domains/comet-native/native-supervisor-legacy-diagnostics.test.ts
+          --maxWorkers=1
+      - name: Native multi-repository workspace and delivery regressions
+        run: >-
+          pnpm exec vitest run
+          test/domains/comet-native/native-workspace-group.test.ts
+          test/domains/comet-native/native-workspace-group-delivery.test.ts
+          test/domains/comet-native/native-group-lifecycle.test.ts
+          test/domains/comet-entry/hook-workspace-group.test.ts
+          --maxWorkers=1
       - run: pnpm test:runtime-smoke
       - name: Verify Eval stop and cleanup recovery on the host platform
         run: >-

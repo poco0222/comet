@@ -130,7 +130,7 @@ export async function cleanupNativeWorkspaceGroup(options: {
 }) {
   const initial = await cleanupStorage(options.root, options.name);
   return withRecoverableFileLock(
-    path.join(initial.paths.locksDir, 'group-delivery.lock'),
+    path.join(initial.paths.runtimeDir, 'locks', 'group-delivery.lock'),
     async () => {
       const io = await cleanupStorage(options.root, options.name);
       const deliveries = await listNativeWorkspaceGroupDeliveries(io.group);

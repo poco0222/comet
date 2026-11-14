@@ -651,10 +651,8 @@ export function apply(ctx) {
             try {
               return json(await statusPayload(ctx, integration));
             } catch (error) {
-              return json(
-                { schema: statusSchema, version, error: String(error?.message ?? error) },
-                500,
-              );
+              ctx.logger?.warn?.(`Comet status unavailable: ${String(error?.message ?? error)}`);
+              return json({ schema: statusSchema, version, error: 'status-unavailable' }, 500);
             }
           },
         }),

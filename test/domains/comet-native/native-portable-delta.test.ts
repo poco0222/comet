@@ -247,8 +247,8 @@ describe('Native portable delta integration', () => {
 
   it('applies an Agent-selected Delta to current canonical text and rejects a missing target', async () => {
     const name = 'modify-password';
-    const passwordSection = `## Requirement: authentication.password Password login\n\nPassword behavior.\n\n`;
-    const deltaText = `schema: comet.native.delta.v1\ncapability: authentication\nbase_hash: ${sha256(baseline)}\nbase_version: 1\nlegacy_hash: ${nativeLegacySectionHash(baseline)}\noperations:\n  - id: authentication.password\n    operation: modify\n    expected_hash: ${nativeRequirementSectionHash(passwordSection)}\n    body: Password behavior with a session check.\n`;
+    const originalRequirementSection = `## Requirement: authentication.password Password login\n\nPassword behavior.\n\n`;
+    const deltaText = `schema: comet.native.delta.v1\ncapability: authentication\nbase_hash: ${sha256(baseline)}\nbase_version: 1\nlegacy_hash: ${nativeLegacySectionHash(baseline)}\noperations:\n  - id: authentication.password\n    operation: modify\n    expected_hash: ${nativeRequirementSectionHash(originalRequirementSection)}\n    body: Password behavior with a session check.\n`;
     const shaped = await prepareChange(name, deltaText);
     await verify(name, shaped);
     await fs.writeFile(
@@ -346,9 +346,9 @@ describe('Native portable delta integration', () => {
 
   it('resumes a prepared Delta transaction without overwriting an independent canonical addition', async () => {
     const name = 'prepared-transaction-rebase';
-    const passwordSection =
+    const originalRequirementSection =
       '## Requirement: authentication.password Password login\n\nPassword behavior.\n\n';
-    const deltaText = `schema: comet.native.delta.v1\ncapability: authentication\nbase_hash: ${sha256(baseline)}\nbase_version: 1\nlegacy_hash: ${nativeLegacySectionHash(baseline)}\noperations:\n  - id: authentication.password\n    operation: modify\n    expected_hash: ${nativeRequirementSectionHash(passwordSection)}\n    body: Password behavior with a session check.\n`;
+    const deltaText = `schema: comet.native.delta.v1\ncapability: authentication\nbase_hash: ${sha256(baseline)}\nbase_version: 1\nlegacy_hash: ${nativeLegacySectionHash(baseline)}\noperations:\n  - id: authentication.password\n    operation: modify\n    expected_hash: ${nativeRequirementSectionHash(originalRequirementSection)}\n    body: Password behavior with a session check.\n`;
     const shaped = await prepareChange(name, deltaText, {
       'authentication.profile': null,
     });
@@ -496,9 +496,9 @@ describe('Native portable delta integration', () => {
 
   it('archives remove and rename deltas without replaying the complete history', async () => {
     const removeName = 'remove-password';
-    const passwordSection =
+    const originalRequirementSection =
       '## Requirement: authentication.password Password login\n\nPassword behavior.\n\n';
-    const removeDelta = `schema: comet.native.delta.v1\ncapability: authentication\nbase_hash: ${sha256(baseline)}\nbase_version: 1\nlegacy_hash: ${nativeLegacySectionHash(baseline)}\noperations:\n  - id: authentication.password\n    operation: remove\n    expected_hash: ${nativeRequirementSectionHash(passwordSection)}\n`;
+    const removeDelta = `schema: comet.native.delta.v1\ncapability: authentication\nbase_hash: ${sha256(baseline)}\nbase_version: 1\nlegacy_hash: ${nativeLegacySectionHash(baseline)}\noperations:\n  - id: authentication.password\n    operation: remove\n    expected_hash: ${nativeRequirementSectionHash(originalRequirementSection)}\n`;
     const removeShape = await prepareChange(removeName, removeDelta);
     await verify(removeName, removeShape);
     await archiveNativePortableChange({ paths, name: removeName });
@@ -508,7 +508,7 @@ describe('Native portable delta integration', () => {
 
     const renameName = 'rename-password';
     await fs.writeFile(path.join(paths.specsDir, 'authentication', 'spec.md'), baseline);
-    const renameDelta = `schema: comet.native.delta.v1\ncapability: authentication\nbase_hash: ${sha256(baseline)}\nbase_version: 1\nlegacy_hash: ${nativeLegacySectionHash(baseline)}\noperations:\n  - id: authentication.password\n    operation: rename\n    to_id: authentication.passcode\n    expected_hash: ${nativeRequirementSectionHash(passwordSection)}\n`;
+    const renameDelta = `schema: comet.native.delta.v1\ncapability: authentication\nbase_hash: ${sha256(baseline)}\nbase_version: 1\nlegacy_hash: ${nativeLegacySectionHash(baseline)}\noperations:\n  - id: authentication.password\n    operation: rename\n    to_id: authentication.passcode\n    expected_hash: ${nativeRequirementSectionHash(originalRequirementSection)}\n`;
     const renameShape = await prepareChange(renameName, renameDelta);
     await verify(renameName, renameShape);
     await archiveNativePortableChange({ paths, name: renameName });

@@ -56,6 +56,7 @@ All notable changes to @rpamis/comet will be documented in this file.
 
 ### Security
 
+- **DeepSeek Harness status endpoint**: Return a stable error code when the plugin status cannot be read and keep diagnostic details in the local plugin log.
 - **Eval preview session**: Serve a fixed HTML page after validating the session token. The browser reads the token from the URL, keeping it out of the generated page source.
 
 ## What's Changed [0.5.2] - 2026-11-06

@@ -4,6 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { parse } from 'yaml';
+import { JSDOM } from 'jsdom';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
 import { renderDashboardMcpHtml } from '../../scripts/build/build-dashboard-mcp.mjs';
@@ -173,8 +174,7 @@ describe('Codex plugin package', () => {
         expect(content.mimeType).toBe('text/html;profile=mcp-app');
         if (!('text' in content)) throw new Error('Comet Dashboard 必须返回文本资源');
         expect(content.text).toContain('Comet Dashboard');
-        const markup = content.text.replace(/<script\b[^>]*>[\s\S]*?<\/script>/giu, '');
-        expect(/<iframe\b/iu.test(markup)).toBe(false);
+        expect(JSDOM.fragment(content.text).querySelectorAll('iframe')).toHaveLength(0);
         expect(Buffer.byteLength(JSON.stringify(resource))).toBeLessThan(10 * 1024 * 1024);
         expect(content._meta?.ui).toEqual({
           csp: { frameDomains: [], connectDomains: [], resourceDomains: ['data:', 'blob:'] },

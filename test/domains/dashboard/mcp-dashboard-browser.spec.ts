@@ -127,9 +127,9 @@ test('renders the packaged Dashboard without frames or browser network access un
             });
           </script>`);
         }
-      } catch (error) {
+      } catch {
         res.writeHead(500);
-        res.end(String(error));
+        res.end('Dashboard test server could not handle the request');
       }
     });
     await new Promise<void>((resolve) => harness!.listen(0, '127.0.0.1', resolve));

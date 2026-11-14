@@ -322,6 +322,7 @@ describe('DeepSeek Harness plugin package', () => {
       const registrations: SkillRegistration[] = [];
       const effects: (() => void)[] = [];
       const injected: string[][] = [];
+      let statusUnavailable = false;
       let whenServices: ((scoped: unknown) => void) | undefined;
       host.apply({
         effect: (register: () => () => void) => {
@@ -334,13 +335,15 @@ describe('DeepSeek Harness plugin package', () => {
               registrations.splice(registrations.indexOf(skill), 1);
             };
           },
-          list: async () =>
-            registrations.map((skill) => ({
+          list: async () => {
+            if (statusUnavailable) throw new Error('Fixture skill registry unavailable');
+            return registrations.map((skill) => ({
               name: skill.name,
               description: skill.description,
               provider: 'runtime',
               source: 'bundled',
-            })),
+            }));
+          },
         },
         logger: { info: () => {}, warn: () => {} },
         inject: (dependencies: string[], callback: (scoped: unknown) => void) => {
@@ -425,6 +428,17 @@ describe('DeepSeek Harness plugin package', () => {
         new Request('http://127.0.0.1:13540/comet-plugin/status', { method: 'POST' }),
       );
       expect(statusPost.status).toBe(405);
+
+      statusUnavailable = true;
+      const failedStatus = await resources.get('/comet-plugin/status')!(
+        new Request('http://127.0.0.1:13540/comet-plugin/status'),
+      );
+      expect(failedStatus.status).toBe(500);
+      expect(await failedStatus.json()).toEqual({
+        schema: 'comet.dsh-plugin.v1',
+        version: packageJson.version,
+        error: 'status-unavailable',
+      });
 
       const dashboard = handlers.get('/comet-plugin/dashboard')!;
       const method = await callHandler(dashboard, createFakeRequest({ method: 'GET' }));

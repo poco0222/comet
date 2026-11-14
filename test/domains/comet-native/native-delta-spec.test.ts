@@ -62,7 +62,7 @@ describe('Native delta specs', () => {
 
   it('modifies, removes, and renames only the addressed stable requirements', () => {
     const baseline = `# Authentication\n\n## Requirement: authentication.password Password login\n\nPassword behavior.\n\n## Requirement: authentication.profile Profile\n\nProfile behavior.\n\n`;
-    const passwordSection = `## Requirement: authentication.password Password login\n\nPassword behavior.\n\n`;
+    const originalRequirementSection = `## Requirement: authentication.password Password login\n\nPassword behavior.\n\n`;
     const profileSection = `## Requirement: authentication.profile Profile\n\nProfile behavior.\n\n`;
     const result = applyNativeDelta({
       baselineMarkdown: baseline,
@@ -72,7 +72,7 @@ describe('Native delta specs', () => {
           operation: 'modify',
           title: 'Password login',
           body: 'Password behavior with a stronger session check.',
-          expected_hash: nativeRequirementSectionHash(passwordSection),
+          expected_hash: nativeRequirementSectionHash(originalRequirementSection),
         },
         {
           id: 'authentication.profile',
@@ -120,7 +120,7 @@ operations:
 
   it('applies the Agent-selected requirement edit and preserves independent current sections', () => {
     const baseline = `# Authentication\n\n## Requirement: authentication.password Password login\n\nPassword behavior.\n\n## Requirement: authentication.profile Profile\n\nProfile behavior.\n\n`;
-    const passwordSection = `## Requirement: authentication.password Password login\n\nPassword behavior.\n\n`;
+    const originalRequirementSection = `## Requirement: authentication.password Password login\n\nPassword behavior.\n\n`;
     const change = delta(
       baseline,
       [
@@ -128,7 +128,7 @@ operations:
           id: 'authentication.password',
           operation: 'modify',
           body: 'Password behavior with a session check.',
-          expected_hash: nativeRequirementSectionHash(passwordSection),
+          expected_hash: nativeRequirementSectionHash(originalRequirementSection),
         },
       ],
       {
@@ -173,7 +173,7 @@ operations:
 
   it('preserves unselected shared policy text while applying the selected requirement', () => {
     const baseline = `# Authentication\n\n## Requirement: authentication.password Password login\n\nPassword behavior.\n\n## Requirement: authentication.policy Session policy\n\nSession policy behavior.\n\n`;
-    const passwordSection =
+    const originalRequirementSection =
       '## Requirement: authentication.password Password login\n\nPassword behavior.\n\n';
     const policySection =
       '## Requirement: authentication.policy Session policy\n\nSession policy behavior.\n\n';
@@ -184,12 +184,12 @@ operations:
           id: 'authentication.password',
           operation: 'modify',
           body: 'Password behavior with a session check.',
-          expected_hash: nativeRequirementSectionHash(passwordSection),
+          expected_hash: nativeRequirementSectionHash(originalRequirementSection),
         },
       ],
       {
         base_requirements: {
-          'authentication.password': nativeRequirementSectionHash(passwordSection),
+          'authentication.password': nativeRequirementSectionHash(originalRequirementSection),
           'authentication.policy': nativeRequirementSectionHash(policySection),
         },
         independent_requirements: {

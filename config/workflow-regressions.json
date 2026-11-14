@@ -2,6 +2,25 @@
   "schema": "comet.release.bad-cases.v1",
   "cases": [
     {
+      "id": "dsh-plugin-status-private-diagnostics",
+      "sources": ["https://github.com/poco0222/comet/security/code-scanning/10"],
+      "behavior": "Keep internal diagnostic text out of the DeepSeek Harness plugin status failure response.",
+      "coverageLevel": "runtime",
+      "reproduction": "Build the DSH plugin in a temporary directory and make the host skill registry throw. At 9309a97a the registered status endpoint returns the fixture exception message in its HTTP 500 JSON.",
+      "expected": "Return HTTP 500 with the status schema, plugin version, and status-unavailable error code.",
+      "forbidden": "Return the underlying exception message or stack information in the status response.",
+      "rootCause": "The status route included the caught exception or its message directly in the JSON response.",
+      "tests": [
+        {
+          "file": "test/scripts/dsh-plugin-build.test.ts",
+          "namePattern": "^DeepSeek Harness plugin package builds an installable bundle whose Host half registers skills and serves the dashboard endpoints$",
+          "requiredNames": [
+            "DeepSeek Harness plugin package builds an installable bundle whose Host half registers skills and serves the dashboard endpoints"
+          ]
+        }
+      ]
+    },
+    {
       "id": "codex-marketplace-windows-checkout-paths",
       "behavior": "默认 Git 配置的 Windows 用户可以在 Codex 市场临时目录完整检出 Comet 仓库。",
       "sources": ["report:codex-marketplace-windows-install-20261114"],

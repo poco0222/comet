@@ -913,6 +913,42 @@ describe('Native workspace group creation', () => {
     ).rejects.toMatchObject({ code: 'ENOENT' });
   });
 
+  it('requires isolation for a second current Shape in a registered Git coordinator', async () => {
+    runGitCommand(projectRoot, ['init', '-b', 'main']);
+    runGitCommand(projectRoot, ['config', 'user.name', 'Workspace Test']);
+    runGitCommand(projectRoot, ['config', 'user.email', 'workspace@example.invalid']);
+    runGitCommand(projectRoot, ['commit', '--allow-empty', '-m', 'initial coordinator']);
+    await writeProjectConfig(projectRoot, { ...defaultProjectConfig(), repositories });
+    const invoke = (...args: string[]) => {
+      const result = spawnSync(
+        process.execPath,
+        [
+          path.resolve('assets/skills/comet-native/scripts/comet-native-runtime.mjs'),
+          ...args,
+          '--json',
+        ],
+        { cwd: projectRoot, encoding: 'utf8', timeout: 30000 },
+      );
+      if (result.error) throw result.error;
+      return { exitCode: result.status, response: JSON.parse(result.stdout) };
+    };
+    const first = invoke('new', 'in-place', '--isolation', 'current');
+    expect(first.exitCode, JSON.stringify(first.response)).toBe(0);
+    expect(first.response.agent.workspace.cwd).toBe(projectRoot);
+    const before = invoke('status', 'in-place');
+    expect(before.exitCode, JSON.stringify(before.response)).toBe(0);
+    expect(before.response.data).toMatchObject({ phase: 'shape' });
+    const blocked = invoke('new', 'second', '--isolation', 'current');
+    expect(blocked.exitCode, blocked.response.summary).not.toBe(0);
+    expect(blocked.response.error.message).toContain('already contains active change in-place');
+    expect(first.response.data.workspaceGuidance ?? '').not.toMatch(/Shapes may share/iu);
+    expect(invoke('status', 'in-place').response.data).toEqual(before.response.data);
+    await expect(
+      fs.stat(path.join(projectRoot, 'docs/comet/changes/second')),
+    ).rejects.toMatchObject({ code: 'ENOENT' });
+    expect(await readNativeWorkspaceGroup(projectRoot)).toBeNull();
+  });
+
   it('binds all repository bytes and Git observations and rejects a missing member', async () => {
     const group = await createNativeWorkspaceGroup(
       await planNativeWorkspaceGroup({ projectRoot, name: 'candidate', repositories }),

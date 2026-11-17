@@ -1,4 +1,8 @@
 import { promises as fs } from 'node:fs';
+import {
+  nativeCurrentShapeActions,
+  usesNativeSharedPlanning,
+} from './native-build-workspace-record.js';
 import path from 'node:path';
 
 import {
@@ -44,6 +48,7 @@ import { resolveContainedNativePath } from './native-paths.js';
 import {
   createNativeSdkStateStore,
   hasNativeManagedRunMarker,
+  readNativeSdkRunRecord,
   writeNativeManagedRunState,
 } from './native-sdk-state-store.js';
 import type { CometProjectConfig, NativeProjectPaths } from './native-types.js';
@@ -143,6 +148,12 @@ export async function createNativeSdkChange(options: {
   workspaceBinding: NativeWorkspaceBinding;
   initialProjectConfig?: CometProjectConfig;
 }): Promise<WorkflowRun> {
+  const root = options.paths.projectRoot;
+  const registeredRepositories = Boolean((await readProjectConfig(root))?.repositories);
+  const sharedPlanning =
+    !registeredRepositories &&
+    !options.workspaceBinding.groupHash &&
+    options.workspaceBinding.changeBranch !== null;
   const create = () =>
     withNativeMutation(options.paths, async () => {
       if (!NAME_PATTERN.test(options.name))
@@ -165,11 +176,36 @@ export async function createNativeSdkChange(options: {
         name: options.name,
         artifactRootRef: options.paths.artifactRootRef,
       });
-      const activeChanges = await listActiveNativeChangesOwnedByWorkspace(options.paths);
-      if (activeChanges.some((name) => name !== options.name)) {
+      const activeChanges = (await listActiveNativeChangesOwnedByWorkspace(options.paths)).filter(
+        (name) => name !== options.name,
+      );
+      const sharedShapes = await Promise.all(
+        activeChanges.map(async (name) => {
+          if (!sharedPlanning) return false;
+          const run = await readNativeSdkRunRecord(options.paths.projectRoot, name);
+          try {
+            await fs.access(path.join(options.paths.changesDir, name, 'brief.md'));
+          } catch (error) {
+            if ((error as NodeJS.ErrnoException).code === 'ENOENT') return false;
+            throw error;
+          }
+          if (!run || run.status === 'cancelled' || !usesNativeSharedPlanning(run)) return false;
+          const state = parseNativePortableState(run.state);
+          return (
+            state.phase === 'shape' ||
+            (state.phase === 'build' &&
+              !nativeCurrentShapeActions(run).some(
+                (action) =>
+                  ['build.builder', 'supervisor.prepare'].includes(action.stepId) &&
+                  action.status !== 'pending',
+              ))
+          );
+        }),
+      );
+      if (sharedShapes.some((shape) => !shape)) {
         throw new NativeWorkspaceIsolationRequiredError(
           options.workspaceBinding.isolation,
-          activeChanges.filter((name) => name !== options.name),
+          activeChanges,
         );
       }
       const changeDir = nativePortableChangeDir(options.paths, options.name);
@@ -216,10 +252,9 @@ export async function createNativeSdkChange(options: {
       await createNativeSdkStateStore(options.paths.projectRoot).read(run.runId);
       return run;
     });
-  const root = options.paths.projectRoot;
   return options.workspaceBinding.isolation === 'current' &&
     !options.workspaceBinding.groupHash &&
-    Boolean((await readProjectConfig(root))?.repositories)
+    registeredRepositories
     ? withNativeWorkspaceGroupCreation(root, options.name, create)
     : create();
 }

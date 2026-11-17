@@ -1,0 +1,95 @@
+name: Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Stable version in package.json, for example 0.5.4 (without v)'
+        required: true
+        type: string
+      action:
+        description: 'Preview, stage packages for npm 2FA approval, or finalize the announcement'
+        default: preview
+        type: choice
+        options: [preview, stage, finalize]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: comet-release
+  cancel-in-progress: false
+
+jobs:
+  release:
+    if: github.repository == 'rpamis/comet' && github.ref == 'refs/heads/master'
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    permissions:
+      actions: read
+      contents: write
+      id-token: write
+    env:
+      RELEASE_VERSION: ${{ inputs.version }}
+      RELEASE_ACTION: ${{ inputs.action }}
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Restore recorded staging results
+        if: inputs.action == 'stage' && github.run_attempt > 1
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
+        with:
+          name: comet-release-stage
+          path: .tmp/release
+          run-id: ${{ github.run_id }}
+          github-token: ${{ github.token }}
+      - uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271 # v6.0.9
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24
+          registry-url: https://registry.npmjs.org
+          package-manager-cache: false
+      - name: Install npm with trusted publishing support
+        run: npm install --global npm@11.21.0
+      - run: pnpm install --frozen-lockfile --ignore-scripts
+      - name: Check version and selected source commit
+        run: |
+          node --input-type=module - <<'NODE'
+          import { checkReleaseCandidate } from './scripts/release/publish-release.mjs';
+          await checkReleaseCandidate({
+            root: process.cwd(),
+            version: process.env.RELEASE_VERSION,
+            action: process.env.RELEASE_ACTION,
+          });
+          NODE
+      - run: pnpm check:generated
+      - run: pnpm release:verify --artifact-only
+      - name: Check generated files remain unchanged
+        run: git diff --exit-code -- assets domains/engine/runtime-schema.generated.ts
+      - name: Verify release metadata and automation
+        if: inputs.action != 'finalize'
+        run: >-
+          pnpm exec vitest run
+          test/repository/release-metadata.test.ts
+          test/scripts/verify-release.test.ts
+          test/scripts/prepublish-check.test.ts
+          test/scripts/publish-release.test.ts
+          test/scripts/staged-release.test.ts
+          --maxWorkers=2
+      - run: pnpm test:package-e2e
+        if: inputs.action != 'finalize'
+      - name: Preview, stage or finalize release
+        run: node scripts/release/publish-release.mjs --version "$RELEASE_VERSION" --action "$RELEASE_ACTION"
+      - name: Save staging results for approval and recovery
+        if: always() && inputs.action == 'stage'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: comet-release-stage
+          path: .tmp/release/stage.json
+          overwrite: true
+          if-no-files-found: ignore
+          retention-days: 30

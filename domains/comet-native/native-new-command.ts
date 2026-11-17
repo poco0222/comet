@@ -463,6 +463,15 @@ export async function nativeNewCommand(
         ...state,
         artifacts: nativeChangeArtifactPaths(paths, state.name),
         preparation: prepared.preparation,
+        ...(sdkRun &&
+        !config.repositories &&
+        prepared.binding.changeBranch !== null &&
+        !prepared.binding.groupHash
+          ? {
+              workspaceGuidance:
+                'Native v4 Shapes may share this planning workspace. Approve with --defer-build to queue implementation. A later next prepares a separate Build worktree when other active changes remain; continue in the returned executionCwd.',
+            }
+          : {}),
         ...(capabilityDiscovery === null
           ? {}
           : {

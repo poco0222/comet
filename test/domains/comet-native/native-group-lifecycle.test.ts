@@ -759,6 +759,6 @@ Read all three repositories in one check.
       nextRun.waits.some((wait) => wait.stepId === 'shape.confirm' && wait.status === 'resolved'),
     ).toBe(false);
   },
-  // Windows CI 到最后的会话恢复断言已用约 600 秒，保留全部交付与恢复检查。
-  process.platform === 'win32' ? 900_000 : 180_000,
+  // Windows CI 到最后的会话恢复断言已用约 600 秒，macOS 的 bundle 完整流程也超过 180 秒。
+  process.platform === 'win32' ? 900_000 : process.platform === 'darwin' ? 360_000 : 180_000,
 );

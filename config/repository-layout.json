@@ -481,7 +481,16 @@
         "to": "engine"
       }
     ],
+    "runtimeImports": [
+      {
+        "from": "domains/skill/plugin-hook-entry.ts",
+        "expression": "pathToFileURL(router).href",
+        "to": "domains/comet-entry/hook-router-entry.ts",
+        "reason": "Plugin Hooks load the same distributed Router from their approved installation without spawning another Node process."
+      }
+    ],
     "crossDomainEntrypoints": [
+      "domains/comet-entry/hook-router-entry.ts",
       "domains/eval/index.ts",
       "domains/agent-learning/index.ts",
       "domains/comet-classic/classic-command-checks.ts",
@@ -516,6 +525,7 @@
       "domains/comet-native/native-sdk-state-store.ts",
       "domains/comet-native/native-supervisor-state.ts",
       "domains/comet-native/native-sdk-status.ts",
+      "domains/comet-native/native-sdk-cancellation.ts",
       "domains/comet-native/native-sdk-history-discovery.ts",
       "domains/comet-native/native-selection.ts",
       "domains/comet-native/native-specs.ts",
@@ -531,6 +541,7 @@
       "domains/engine/runtime-action.ts",
       "domains/engine/runtime-json.ts",
       "domains/engine/runtime.ts",
+      "domains/engine/runtime-store.ts",
       "domains/engine/run-store.ts",
       "domains/engine/state.ts",
       "domains/engine/storage-layout.ts",

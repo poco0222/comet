@@ -216,6 +216,7 @@ Read all three repositories in one check.
     );
     const { runtime } = await loadOwnedNativeSdkRuntime(root, 'feature');
     let run = await runtime.inspect('feature');
+    const runId = run.runId;
     await fs.writeFile(
       path.join(change, 'children.yaml'),
       'schema: comet.native.children.v2\nchildren:\n  - name: child\n    summary: Unsupported group child\n    depends_on: []\n',
@@ -265,9 +266,38 @@ Read all three repositories in one check.
       decisionId: 'fixture-shape-approved',
       choice: 'approved',
     });
+    const approvedWait = run.waits.find(({ id }) => id === wait.id);
+    expect(approvedWait?.status).toBe('resolved');
+    const otherBeforeBuild = await ok('status', 'other');
+    expect(otherBeforeBuild.phase).toBe('shape');
+    const worktrees = () =>
+      plan.repositories.map(({ sourceRoot }) =>
+        runGitCommand(sourceRoot, ['worktree', 'list', '--porcelain']),
+      );
+    const worktreesBeforeBuild = worktrees();
     const claimed = await ok('next', 'feature', '--session', 'fixture-builder');
     expect(claimed.phase).toBe('build');
     run = await runtime.inspect('feature');
+    expect(run.runId).toBe(runId);
+    expect(run.waits.find(({ id }) => id === wait.id)).toEqual(approvedWait);
+    expect(parseNativePortableState(run.state).workspace.group_hash).toBe(plan.hash);
+    expect(worktrees()).toEqual(worktreesBeforeBuild);
+    expect(await readWorkspaceGroupSession(coordinator, 'fixture-builder')).toMatchObject({
+      name: 'feature',
+      projectRoot: root,
+    });
+    const expectedBuild = {
+      phase: 'build',
+      run: { id: runId, revision: run.revision },
+      workspace: { projectRoot: root, planHash: plan.hash },
+    };
+    expect(await ok('status', 'feature')).toMatchObject(expectedBuild);
+    for (const cwd of [root, ...plan.repositories.map(({ worktreeRoot }) => worktreeRoot)]) {
+      const status = await command(['status', 'feature', '--json'], cwd);
+      expect(status.output.exitCode, status.output.stdout + status.output.stderr).toBe(0);
+      expect(status.dispatch.data).toMatchObject(expectedBuild);
+    }
+    expect(await ok('status', 'other')).toEqual(otherBeforeBuild);
     for (const entry of plan.repositories.slice(0, 2))
       await fs.writeFile(path.join(entry.worktreeRoot, 'source.txt'), 'new\n');
     const resultFile = path.join(temporary, 'result.json');
@@ -729,6 +759,6 @@ Read all three repositories in one check.
       nextRun.waits.some((wait) => wait.stepId === 'shape.confirm' && wait.status === 'resolved'),
     ).toBe(false);
   },
-  // Windows CI 到最后的会话恢复断言已用约 600 秒，保留全部交付与恢复检查。
-  process.platform === 'win32' ? 900_000 : 180_000,
+  // Windows CI 到最后的会话恢复断言已用约 600 秒，macOS 的 bundle 完整流程也超过 180 秒。
+  process.platform === 'win32' ? 900_000 : process.platform === 'darwin' ? 360_000 : 180_000,
 );

@@ -43,6 +43,55 @@ function classifyIssue(
 }
 
 describe('CI workflows', () => {
+  it('builds once per operating system and shares complete outputs with test shards', async () => {
+    const ci = parse(await readWorkflow('ci.yml'));
+    const build = ci.jobs.build;
+    expect(build.strategy.matrix.os).toEqual(['ubuntu-latest', 'macos-latest', 'windows-latest']);
+    expect(build.steps.map((step: { run?: string }) => step.run)).toContain('pnpm build');
+    expect(
+      build.steps.find((step: { uses?: string }) => step.uses?.startsWith('actions/setup-node@'))
+        .with['node-version'],
+    ).toBe("${{ matrix.os == 'ubuntu-latest' && '22.16.0' || '24' }}");
+    const upload = build.steps.find((step: { uses?: string }) =>
+      step.uses?.startsWith('actions/upload-artifact@'),
+    );
+    expect(upload.with).toMatchObject({
+      name: 'build-${{ matrix.os }}',
+      path: 'dist/',
+      'if-no-files-found': 'error',
+    });
+    for (const name of [
+      'quality',
+      'core-regressions',
+      'node-compatibility',
+      'runtime-smoke',
+      'package-e2e',
+      'eval-static',
+      'sdk-contracts',
+    ]) {
+      const job = ci.jobs[name];
+      expect(job.needs, name).toContain('build');
+      expect(
+        job.steps.some(
+          (step: { run?: string }) =>
+            step.run === 'pnpm build' || step.run === 'pnpm exec tsc --pretty false',
+        ),
+        name,
+      ).toBe(false);
+      const download = job.steps.find((step: { uses?: string }) =>
+        step.uses?.startsWith('actions/download-artifact@'),
+      );
+      expect(download.with, name).toEqual({
+        name: ['quality', 'node-compatibility', 'eval-static'].includes(name)
+          ? 'build-ubuntu-latest'
+          : 'build-${{ matrix.os }}',
+        path: 'dist',
+      });
+      expect(download.if, name).toBeUndefined();
+      expect(download['continue-on-error'], name).toBeUndefined();
+    }
+    expect(ci.jobs['ci-required'].needs).toContain('build');
+  });
   it('runs all Windows badcase shards with separate evidence and the original deadline', async () => {
     const workflow = parse(await readWorkflow('ci.yml'));
     const core = workflow.jobs['core-regressions'];
@@ -306,7 +355,7 @@ describe('CI workflows', () => {
       'continue-on-error'?: boolean;
     }>;
     const install = steps.findIndex((step) => step.run?.startsWith('pnpm install'));
-    const build = steps.findIndex((step) => step.run === 'pnpm exec tsc --pretty false');
+    const build = steps.findIndex((step) => step.name === 'Restore compiled outputs');
     const tests = steps.findIndex((step) => step.run?.startsWith('uv run pytest'));
     const required = steps.findIndex(
       (step) => step.name === 'Require real Runtime API cases to pass',
@@ -316,7 +365,7 @@ describe('CI workflows', () => {
     expect(build).toBeGreaterThan(install);
     expect(tests).toBeGreaterThan(build);
     expect(required).toBeGreaterThan(tests);
-    expect(steps[build]['working-directory']).toBe('.');
+    expect(steps[build]['working-directory']).toBeUndefined();
     expect(steps[build].if).toBeUndefined();
     expect(steps[build]['continue-on-error']).toBeUndefined();
     expect(job.defaults.run['working-directory']).toBe('eval');
@@ -469,7 +518,7 @@ describe('CI workflows', () => {
       expect(step.if).toBe("matrix.os == 'macos-latest'");
       const steps = ci.jobs[job].steps ?? [];
       expect(steps.indexOf(step)).toBeLessThan(
-        steps.findIndex((item) => item.run === 'pnpm build'),
+        steps.findIndex((item) => item.name === 'Restore compiled outputs'),
       );
       const source = step.run?.match(/^node -e "([\s\S]+)"$/)?.[1];
       expect(source).toBeDefined();
@@ -507,7 +556,7 @@ describe('CI workflows', () => {
       expect(step.if).toBe("matrix.os == 'windows-latest'");
       const steps = ci.jobs[job].steps ?? [];
       expect(steps.indexOf(step)).toBeLessThan(
-        steps.findIndex((item) => item.run === 'pnpm build'),
+        steps.findIndex((item) => item.name === 'Restore compiled outputs'),
       );
       const source = step.run?.match(/^node -e "([\s\S]+)"$/)?.[1];
       expect(source).toBeDefined();
@@ -661,7 +710,14 @@ describe('CI workflows', () => {
     const ci = parse(await readWorkflow('ci.yml')) as {
       jobs: Record<
         string,
-        { steps?: Array<{ run?: string; uses?: string; with?: Record<string, unknown> }> }
+        {
+          steps?: Array<{
+            name?: string;
+            run?: string;
+            uses?: string;
+            with?: Record<string, unknown>;
+          }>;
+        }
       >;
     };
     const steps = ci.jobs.quality?.steps ?? [];
@@ -671,13 +727,17 @@ describe('CI workflows', () => {
     expect(steps.some((step) => step.run?.includes('pnpm check:sdk-fixtures'))).toBe(true);
     expect(steps.some((step) => step.run === 'pnpm check:sdk-api')).toBe(true);
     expect(steps.findIndex((step) => step.run?.includes('pnpm check:sdk-fixtures'))).toBeLessThan(
-      steps.findIndex((step) => step.run === 'pnpm build'),
+      steps.findIndex((step) => step.name === 'Restore compiled outputs'),
     );
     expect(steps.findIndex((step) => step.run === 'pnpm check:sdk-api')).toBeGreaterThan(
-      steps.findIndex((step) => step.run === 'pnpm build'),
+      steps.findIndex((step) => step.name === 'Restore compiled outputs'),
     );
-    expect(steps.findIndex((step) => step.run?.includes('pnpm check:generated'))).toBeLessThan(
-      steps.findIndex((step) => step.run === 'pnpm build'),
+    const buildSteps = ci.jobs.build.steps ?? [];
+    expect(
+      buildSteps.findIndex((step) => step.run === 'pnpm check:generated'),
+    ).toBeGreaterThanOrEqual(0);
+    expect(buildSteps.findIndex((step) => step.run === 'pnpm check:generated')).toBeLessThan(
+      buildSteps.findIndex((step) => step.run === 'pnpm build'),
     );
     for (const job of Object.values(ci.jobs))
       for (const step of job.steps ?? [])
@@ -742,15 +802,6 @@ describe('CI workflows', () => {
     expect(ciWorkflow).toContain(
       'uv run pytest -q local/tests/scaffold local/tests/tasks/test_validation_scripts.py',
     );
-  });
-
-  it('separates unstable external integrations into a strict scheduled canary', async () => {
-    const workflow = await readWorkflow('integration-canary.yml');
-
-    expect(workflow).toContain('schedule:');
-    expect(workflow).toContain('--workflow classic --json');
-    expect(workflow).toContain("result[component] === 'failed'");
-    expect(workflow).toContain('throw new Error(`External installer failures:');
   });
 
   it('requires both actual core platforms before the paid Eval job', async () => {

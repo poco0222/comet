@@ -2,6 +2,7 @@ import { readNativeWorkspaceGroup } from './native-workspace-group.js';
 import { inspectNativeWorkspaceGroupDelivery } from './native-workspace-group-delivery.js';
 import { readNativeWorkspaceCleanupStatus } from './native-workspace-group-cleanup.js';
 import type { WorkflowRun } from '../engine/runtime.js';
+import { readNativeBuildWorkspace } from './native-build-workspace-record.js';
 import type { NativePortableState } from './native-portable-types.js';
 import path from 'node:path';
 import { withGitWorktreeReadScope } from '../../platform/paths/git-worktree.js';
@@ -48,6 +49,8 @@ export async function inspectNativeSdkStatus(options: {
 }): Promise<NativeSdkStatusProjection> {
   const retained = await readNativeWorkspaceCleanupStatus(options.projectRoot, options.name);
   if (retained) return retained;
+  const transferred = await readNativeBuildWorkspace(options.projectRoot, options.name);
+  if (transferred) options = { ...options, projectRoot: transferred.projectRoot };
   const inspection = await inspectNativeSdkRun(options.projectRoot, options.name, {
     readOnly: options.readOnly ?? true,
   });

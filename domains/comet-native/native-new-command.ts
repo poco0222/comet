@@ -200,7 +200,7 @@ async function suggestNativeRepositoryRegistration(
   throw new NativeUsageError([message, '', 'repositories:', ...entries].join('\n'));
 }
 
-async function prepareNativeChangeCreation(args: string[], projectRoot: string) {
+export async function prepareNativeChangeCreation(args: string[], projectRoot: string) {
   const name = requiredPositional(args, 'change name');
   let config = await readProjectConfig(projectRoot);
   const languageSpecified = args.includes('--language');
@@ -415,7 +415,7 @@ async function prepareNativeChangeCreation(args: string[], projectRoot: string) 
   };
 }
 
-async function finishNativeChangeCreation(
+export async function finishNativeChangeCreation(
   creation: Exclude<Awaited<ReturnType<typeof prepareNativeChangeCreation>>, DispatchResult>,
   state: NativePortableState,
   describe: () => Promise<object> | object,

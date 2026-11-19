@@ -21,6 +21,7 @@ export async function createNativeCompatFixture(args: string[], projectRoot: str
   const name = args[0];
   await assertChangeNotSdkOwned(projectRoot, 'native', name);
   const creation = await prepareNativeChangeCreation(args, projectRoot);
+  if ('exitCode' in creation) throw new Error('Expected prepared workspace for a compat fixture');
   await assertChangeNotSdkOwned(creation.projectRoot, 'native', name);
   const state = await createNativePortableChange({
     paths: creation.paths,

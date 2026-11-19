@@ -3,12 +3,15 @@ import type { RuntimeValue, WorkflowRun } from '../engine/runtime.js';
 import { readSdkChangeOwner } from '../workflow-contract/change-runtime-owner.js';
 import {
   bindWorkspaceGroupSession,
+  findWorkspaceGroupIntegrationRoot,
+  findWorkspaceGroupRoot,
   readWorkspaceGroup,
 } from '../workflow-contract/workspace-group.js';
 import { readNativeWorkspaceCleanupStatus } from './native-workspace-group-cleanup.js';
 import {
   assertNoArguments,
   configuredPaths,
+  NativeUsageError,
   requiredPositional,
   success,
   takeFlag,
@@ -21,7 +24,7 @@ import {
   createNativeSdkStateStore,
   isNativeSdkRunRecoveryRequiredError,
 } from './native-sdk-state-store.js';
-import { selectNativeChange } from './native-selection.js';
+import { deselectNativeChange, selectNativeChange } from './native-selection.js';
 import {
   inspectDiscoveredNativeStatus,
   NativePristineSdkRunRecoverableError,
@@ -86,6 +89,23 @@ export async function nativeSelectCommand(
   args: string[],
   projectRoot: string,
 ): Promise<DispatchResult> {
+  if (takeFlag(args, '--none')) {
+    assertNoArguments(args);
+    if (
+      (await findWorkspaceGroupRoot(projectRoot)) ||
+      (await findWorkspaceGroupIntegrationRoot(projectRoot))
+    )
+      throw new NativeUsageError(
+        'Use select --none in an independent workspace. This is a registered multi-repository task or integration workspace.',
+      );
+    await deselectNativeChange((await configuredPaths(projectRoot)).paths);
+    return success('select', {
+      selected: null,
+      scope: 'workspace',
+      message:
+        'No Comet change is selected in this workspace. Ordinary edits are allowed. Resume with comet native select <name>.',
+    });
+  }
   const name = requiredPositional(args, 'change name');
   const rebind = takeFlag(args, '--rebind');
   const sessionId = takeOption(args, '--session');
@@ -123,10 +143,11 @@ export async function nativeSelectCommand(
   const group = sessionId !== undefined ? await readWorkspaceGroup(executionCwd) : null;
   if (sessionId !== undefined && !group)
     throw new Error('select --session requires a registered workspace group task');
-  await selectNativeChange((await configuredPaths(executionCwd)).paths, name);
+  const { paths } = await configuredPaths(executionCwd);
   if (group && sessionId)
     await bindWorkspaceGroupSession(group, sessionId, {
       replace: true,
+      afterBind: () => selectNativeChange(paths, name),
       retiredRepositories: async (previous) => {
         const status = await readNativeWorkspaceCleanupStatus(previous.projectRoot, previous.name);
         return status?.workspace.planHash === previous.planHash
@@ -136,6 +157,7 @@ export async function nativeSelectCommand(
           : [];
       },
     });
+  else await selectNativeChange(paths, name);
   return {
     ...success('select', { selected: name, ...status }),
     executionCwd,

@@ -213,6 +213,11 @@ describe('Comet Hook workspace groups', () => {
       expect(result.stderr).toContain('multiple task workspaces');
     }
     expect(hook(path.join(roots[0], 'backend/repair.ts')).status).toBe(0);
+    const none = await runNativeCliDetailed(['select', '--none', '--json'], {
+      invocationCwd: path.join(roots[0], 'backend'),
+    });
+    expect(none.output.exitCode).not.toBe(0);
+    expect(none.output.stdout).toContain('registered multi-repository');
     const runtimeRoot = resolveWorkspaceRuntimeLocation(roots[0]).runtimeRoot;
     expect(hook(path.join(runtimeRoot, 'workspace-group-integration.json')).status).toBe(2);
     const registration = path.join(runtimeRoot, 'workspace-group-integration.json');
@@ -223,6 +228,89 @@ describe('Comet Hook workspace groups', () => {
     expect(hook(path.join(taskB, 'frontend/new.ts')).status).toBe(2);
     await fs.writeFile(registration, saved);
     expect(hook(path.join(roots[0], 'backend/repair.ts')).status).toBe(0);
+  });
+
+  it('keeps task writes guarded when the coordinator explicitly has no selection', async () => {
+    const select = (cwd: string, ...args: string[]) =>
+      spawnSync(
+        process.execPath,
+        [
+          path.resolve('assets/skills/comet-native/scripts/comet-native-select.mjs'),
+          ...args,
+          '--json',
+        ],
+        { cwd, encoding: 'utf8', timeout: 20000 },
+      );
+    const hook = (cwd: string, target: string, sessionId: string) =>
+      spawnSync(
+        process.execPath,
+        [path.resolve('assets/skills/comet/scripts/comet-hook-router.mjs'), '--platform', 'codex'],
+        {
+          cwd,
+          encoding: 'utf8',
+          timeout: 20000,
+          input: JSON.stringify({
+            cwd,
+            session_id: sessionId,
+            tool_name: 'Edit',
+            tool_input: { file_path: target },
+          }),
+        },
+      );
+    const coordinatorSelection = path.join(coordinator, '.comet/current-change.json');
+    const taskSelection = path.join(taskA, '.comet/current-change.json');
+    const saved = await fs.readFile(taskSelection);
+    const sessionId = 'explicit-none-group-session';
+    try {
+      expect(select(coordinator, 'task-a', '--session', sessionId).status).toBe(0);
+      const deselect = select(coordinator, '--none');
+      expect(deselect.status, deselect.stdout + deselect.stderr).toBe(0);
+      expect(JSON.parse(await fs.readFile(coordinatorSelection, 'utf8')).workflow).toBe('none');
+      expect(hook(coordinator, path.join(coordinator, 'ordinary.ts'), 'independent').status).toBe(
+        0,
+      );
+      expect(
+        hook(coordinator, path.join(coordinator, 'docs/comet/specs/shared/spec.md'), 'independent')
+          .status,
+      ).toBe(2);
+      for (const target of [
+        path.join(taskB, 'frontend/wrong.ts'),
+        path.join(coordinator, 'backend/wrong.ts'),
+      ]) {
+        const outcome = hook(coordinator, target, sessionId);
+        expect(outcome.status, outcome.stderr).toBe(2);
+        expect(outcome.stderr).toContain('multiple task workspaces');
+      }
+      const stillShape = hook(coordinator, path.join(taskA, 'frontend/wrong.ts'), sessionId);
+      expect(stillShape.status, stillShape.stderr).toBe(2);
+      expect(stillShape.stderr).toMatch(/Shape|shape/);
+      for (const root of [taskA, path.join(taskA, 'backend')]) {
+        const attempt = select(root, '--none');
+        expect(attempt.stdout + attempt.stderr).toContain('registered multi-repository');
+        expect(attempt.status).not.toBe(0);
+        expect(await fs.readFile(taskSelection)).toEqual(saved);
+      }
+      await fs.copyFile(coordinatorSelection, taskSelection);
+      try {
+        const stale = hook(coordinator, path.join(taskA, 'frontend/wrong.ts'), sessionId);
+        expect(stale.status, stale.stderr).toBe(2);
+        expect(stale.stderr).toContain('Select the owning multi-repository task');
+      } finally {
+        await fs.writeFile(taskSelection, saved);
+      }
+      expect(select(coordinator, '--none', '--session', sessionId).status).not.toBe(0);
+      const switched = select(coordinator, 'task-b', '--session', sessionId);
+      expect(switched.status, switched.stdout + switched.stderr).toBe(0);
+      expect(hook(coordinator, path.join(taskA, 'frontend/wrong.ts'), sessionId).stderr).toContain(
+        'session is bound to task-b',
+      );
+      expect(hook(coordinator, path.join(taskB, 'frontend/wrong.ts'), sessionId).stderr).toMatch(
+        /Shape|shape/,
+      );
+    } finally {
+      await fs.writeFile(taskSelection, saved);
+      await fs.rm(coordinatorSelection, { force: true });
+    }
   });
 
   it('does not switch away from a missing active member without a cleanup receipt', async () => {
@@ -238,13 +326,18 @@ describe('Comet Hook workspace groups', () => {
         '--json',
       ]);
     expect((await invoke('task-a')).output.exitCode).toBe(0);
+    const targetSelection = path.join(taskB, '.comet/current-change.json');
+    const savedSelection = await fs.readFile(targetSelection);
     const member = path.join(taskA, 'mobile'),
       backup = path.join(temporary, 'saved-mobile');
     await fs.rename(member, backup);
     try {
+      await fs.unlink(targetSelection);
       expect((await invoke('task-b')).output.exitCode).not.toBe(0);
+      await expect(fs.readFile(targetSelection)).rejects.toMatchObject({ code: 'ENOENT' });
     } finally {
       await fs.rename(backup, member);
+      await fs.writeFile(targetSelection, savedSelection);
     }
     await expect(
       resolveCometHookProjectRoot(coordinator, {
@@ -255,6 +348,26 @@ describe('Comet Hook workspace groups', () => {
         sessionId: session,
       }),
     ).resolves.toBe(taskA);
+
+    await fs.unlink(targetSelection);
+    await fs.mkdir(targetSelection);
+    try {
+      const failedWrite = await invoke('task-b');
+      expect(failedWrite.output.exitCode).not.toBe(0);
+      expect(failedWrite.output.stdout).toMatch(/EISDIR|ENOTDIR|EPERM/i);
+      await expect(
+        resolveCometHookProjectRoot(coordinator, {
+          intent: 'context',
+          toolName: null,
+          cwd: coordinator,
+          targets: [],
+          sessionId: session,
+        }),
+      ).resolves.toBe(taskA);
+    } finally {
+      await fs.rmdir(targetSelection);
+      await fs.writeFile(targetSelection, savedSelection);
+    }
   });
 
   it('binds parent-cwd sessions to one task and only switches through explicit select', async () => {

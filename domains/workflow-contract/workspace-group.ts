@@ -452,6 +452,7 @@ export async function bindWorkspaceGroupSession(
   sessionId: string,
   options: {
     replace?: boolean;
+    afterBind?: () => Promise<void>;
     retiredRepositories?: (group: WorkspaceGroupRegistration) => Promise<readonly string[]>;
   } = {},
 ): Promise<void> {
@@ -475,8 +476,26 @@ export async function bindWorkspaceGroupSession(
           `from coordinator ${group.coordinatorRoot}, inspect it with comet native status ${existing.name}. ` +
           `To explicitly switch tasks, run comet native select ${group.name} --session <actual-session> from that coordinator`,
       );
-    if (!isDeepStrictEqual(existing, group))
-      await atomicWriteContainedJson(file, group, { containedRoot: runtimeRoot });
+    const changed = !isDeepStrictEqual(existing, group);
+    if (changed) await atomicWriteContainedJson(file, group, { containedRoot: runtimeRoot });
+    try {
+      await options.afterBind?.();
+    } catch (error) {
+      if (changed) {
+        try {
+          if (existing)
+            await atomicWriteContainedJson(file, existing, { containedRoot: runtimeRoot });
+          else await fs.rm(file);
+        } catch (restoreError) {
+          throw new AggregateError(
+            [error, restoreError],
+            'Could not restore the previous session binding after selection failed. Retry explicit task selection.',
+            { cause: restoreError },
+          );
+        }
+      }
+      throw error;
+    }
   });
 }
 

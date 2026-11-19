@@ -2,6 +2,158 @@
   "schema": "comet.release.bad-cases.v1",
   "cases": [
     {
+      "id": "issue-569-fixed-application-distribution",
+      "behavior": "Comet 升级后可导出旧固定包并安装到项目级或用户级，再从安装记录启动应用。",
+      "sources": ["https://github.com/rpamis/comet/issues/569"],
+      "coverageLevel": "public-cli",
+      "reproduction": "用未修复的 0.5.5 CLI 导出记录为 0.5.4 的完整固定包，CLI 报应用要求 Runtime 0.5.4。安装预览经过同一包校验。",
+      "expected": "旧包完整导出，确认预览后安装至两个作用域，按应用 ID 启动并保留 0.5.4 来源字段。",
+      "forbidden": "仅因 Comet 版本变化拒绝完整包，或改写导出、已安装的 application.json。",
+      "rootCause": "安装预览、确认和导出共用的完整包校验强制要求 Manifest 的 runtimeVersion 与当前 Comet 发布版本一致。",
+      "tests": [
+        {
+          "file": "test/app/pinned-application-upgrade.test.ts",
+          "namePattern": "^exports and installs a 0\\.5\\.4 fixed package at project and user scope after a Comet upgrade$",
+          "requiredNames": [
+            "exports and installs a 0.5.4 fixed package at project and user scope after a Comet upgrade"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "issue-569-fixed-application-cold-inspection",
+      "behavior": "Comet 升级后从冷启动 CLI 查询 Native、Classic 和 standalone 的原固定 Run。",
+      "sources": ["https://github.com/rpamis/comet/issues/569"],
+      "coverageLevel": "public-cli",
+      "reproduction": "npm 0.5.4 CLI 保存四类固定包的已批准活动 Run，未修复的 0.5.5 CLI 以原应用 ID 和 Run ID 执行 inspect 均返回退出码 65。",
+      "expected": "通过固定归属找到原包，完整返回原 Run 和应用身份，保留 Action、批准、定义和修订号。",
+      "forbidden": "仅因当前 Comet 版本变化拒绝查询，或以新定义、新应用身份或新 Run 替代原记录。",
+      "rootCause": "加载固定应用时，发布版本相等检查在读取原 Run 和校验实际执行契约前直接拒绝加载。",
+      "tests": [
+        {
+          "file": "test/app/pinned-application-upgrade.test.ts",
+          "namePattern": "^cold-inspects and continues the original 0\\.5\\.4 (native|classic-hotfix|classic-full|standalone) Run after a Comet upgrade$",
+          "requiredNames": [
+            "cold-inspects and continues the original 0.5.4 native Run after a Comet upgrade",
+            "cold-inspects and continues the original 0.5.4 classic-hotfix Run after a Comet upgrade",
+            "cold-inspects and continues the original 0.5.4 classic-full Run after a Comet upgrade",
+            "cold-inspects and continues the original 0.5.4 standalone Run after a Comet upgrade"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "issue-569-fixed-application-continuation",
+      "behavior": "升级后在原 Run 上续领已批准的 Action，应用源码和固定 Skill 资源发生漂移时保留原状态并拒绝继续。",
+      "sources": ["https://github.com/rpamis/comet/issues/569"],
+      "coverageLevel": "public-cli",
+      "reproduction": "0.5.4 CLI 持久化批准和待领取 Action，0.5.5 CLI 的 claim 经过与 inspect 相同的固定应用版本检查，无法进入领取。",
+      "expected": "恢复原文件后领取原 Action，保留 Run ID、定义、批准、Action ID、attempt 与 inputHash，修订号只推进一次。",
+      "forbidden": "重建 Run、重复批准或重派 Action，或在固定应用和 Skill 内容漂移时领取工作。",
+      "rootCause": "续行与查询共用固定应用加载器，发布版本白名单把实际内容检查和领域恢复限制在指定版本。",
+      "tests": [
+        {
+          "file": "test/app/pinned-application-upgrade.test.ts",
+          "namePattern": "^cold-inspects and continues the original 0\\.5\\.4 (native|classic-hotfix|classic-full|standalone) Run after a Comet upgrade$",
+          "requiredNames": [
+            "cold-inspects and continues the original 0.5.4 native Run after a Comet upgrade",
+            "cold-inspects and continues the original 0.5.4 classic-hotfix Run after a Comet upgrade",
+            "cold-inspects and continues the original 0.5.4 classic-full Run after a Comet upgrade",
+            "cold-inspects and continues the original 0.5.4 standalone Run after a Comet upgrade"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "native-independent-work-selection",
+      "behavior": "未完成 Shape 旁的独立修改可经公开命令明确退出 Comet，再选择原需求后恢复 Shape 保护。",
+      "sources": ["https://github.com/rpamis/comet/issues/568"],
+      "coverageLevel": "public-cli",
+      "reproduction": "0.5.3 与 0.5.4 Router bundle 在独立 session 的 Edit 上均 exit 2；相同新增 CLI 回归在修复前因 select --none 返回 exit 64 失败。",
+      "expected": "select --none 持久化明确取消选择，普通源码编辑成功，原 Run 状态不变，重新 select 原需求后 Shape 写入仍被拦截。",
+      "forbidden": "强制批准或取消 Shape、改变原 Run、重新选择后继续放行、影响其他 worktree。",
+      "rootCause": "共享选择只表达已选与缺失，缺少显式未选择状态，项目唯一 active Shape 被默认用作所有源码写入的归属。",
+      "tests": [
+        {
+          "file": "test/app/native-selection-none.test.ts",
+          "namePattern": "^Native explicit no selection CLI (releases unrelated writes and restores Shape protection through explicit selection|isolates explicit none from another Git worktree)$",
+          "requiredNames": [
+            "Native explicit no selection CLI releases unrelated writes and restores Shape protection through explicit selection",
+            "Native explicit no selection CLI isolates explicit none from another Git worktree"
+          ]
+        }
+      ],
+      "additionalAcceptance": [
+        {
+          "layer": "真实 Claude Code Hook",
+          "status": "pending",
+          "evidence": [
+            "本地公开 CLI 与生成 Router 的 Claude PreToolUse 事件重放通过；负责人 benym，需在用户原 Claude 会话验证退出后的真实 Edit 与重新选择后的拒绝。"
+          ]
+        },
+        {
+          "layer": "真实模型自然语言退出与恢复",
+          "status": "pending",
+          "evidence": [
+            "平台 Rule、CLI 帮助和拒绝消息提供公开取消选择指引；未获 Eval 启动授权，负责人 benym，授权后验证 Agent 按用户意图调用退出及恢复命令。"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "native-no-selection-resume-contract",
+      "behavior": "明确 none 阻止恢复探测与 Hook 的唯一 active change 回退推断，同时继续保护正式材料和 Runtime 控制数据。",
+      "sources": ["https://github.com/rpamis/comet/issues/568"],
+      "coverageLevel": "public-cli",
+      "reproduction": "旧版本自然语言返回 out_of_scope 后仍拒绝编辑；删除 selection 后也仍关联唯一 Shape。新增同一 CLI 测试修复前因缺少 --none 失败。",
+      "expected": "none 与缺少 selection 区分，探测只读返回 no-change-selected，普通编辑放行，正式材料与 Runtime 仍受保护，冲突参数不写入。",
+      "forbidden": "把 none 当缺失后自动恢复、所有 out_of_scope 都取消选择、直接编辑 selection 或正式材料、接受带旧归属的 none。",
+      "rootCause": "恢复探测的 out_of_scope 为只读意图结果，Hook 不读取这个结果，缺少跨二者共享的明确退出契约。",
+      "tests": [
+        {
+          "file": "test/app/native-selection-none.test.ts",
+          "namePattern": "^Native explicit no selection CLI (keeps explicit none during ambient resume and protects workflow artifacts|distinguishes missing selection and rejects conflicting deselection arguments)$",
+          "requiredNames": [
+            "Native explicit no selection CLI keeps explicit none during ambient resume and protects workflow artifacts",
+            "Native explicit no selection CLI distinguishes missing selection and rejects conflicting deselection arguments"
+          ]
+        },
+        {
+          "file": "test/domains/comet-entry/current-selection.test.ts",
+          "namePattern": "^shared Comet current selection (retains explicit none through migration and unrelated cleanup|rejects none records retaining another owner)$",
+          "requiredNames": [
+            "shared Comet current selection retains explicit none through migration and unrelated cleanup",
+            "shared Comet current selection rejects none records retaining another owner"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "release-published-version-guard",
+      "behavior": "指定版本的 GitHub Release 已发布时明确报错并提前停止，master 前进后也不能重复发布。",
+      "sources": ["report:2026-11-16-release-published-version-guard"],
+      "coverageLevel": "public-cli",
+      "reproduction": "91f3d0f0 的同版已发布路径会继续生成公告并核验 npm 后成功退出；公开 CLI 最小模拟案例因继续请求 generate-notes 而失败，新实现仅查询版本即拒绝。",
+      "expected": "preview、stage、finalize 均提示 GitHub Release 版本已发布并失败退出，在生成公告、打包和 npm 操作前停止；原 tag 指向旧提交时也报告重复版本。",
+      "forbidden": "将已发布版本当作本次发布成功、继续 npm 操作、重新写入公告或移动 tag；将未发布草稿当成已发布版本拒绝。",
+      "rootCause": "原预检读取已发布 Release 后仍返回候选，只在最终写入时跳过，缺少明确的重复版本拒绝。",
+      "tests": [
+        {
+          "file": "test/scripts/publish-release.test.ts",
+          "namePattern": "^release candidate and final announcement (rejects an already published version before preparing packages: (preview|stage|finalize)|reports a duplicate release before checking an older tag against advanced master|rejects a published version through the public CLI before npm or release writes|keeps an already published announcement unchanged on a rerun|publishes an existing draft only after its npm download is verified)$",
+          "requiredNames": [
+            "release candidate and final announcement rejects an already published version before preparing packages: preview",
+            "release candidate and final announcement rejects an already published version before preparing packages: stage",
+            "release candidate and final announcement rejects an already published version before preparing packages: finalize",
+            "release candidate and final announcement reports a duplicate release before checking an older tag against advanced master",
+            "release candidate and final announcement rejects a published version through the public CLI before npm or release writes",
+            "release candidate and final announcement keeps an already published announcement unchanged on a rerun",
+            "release candidate and final announcement publishes an existing draft only after its npm download is verified"
+          ]
+        }
+      ]
+    },
+    {
       "id": "release-finalize-master",
       "behavior": "人工 finalize 只核验指定 npm 版本公开且可下载，以本次 master 创建 GitHub Release，不要求 npm 与 master 同提交。",
       "sources": [
@@ -463,25 +615,6 @@
           "file": "test/platform/process/owned-command-termination.test.ts",
           "namePattern": "^waits for owner readiness before measuring the independent deadline$",
           "requiredNames": ["waits for owner readiness before measuring the independent deadline"]
-        }
-      ]
-    },
-    {
-      "id": "dsh-plugin-status-private-diagnostics",
-      "sources": ["https://github.com/poco0222/comet/security/code-scanning/10"],
-      "behavior": "Keep internal diagnostic text out of the DeepSeek Harness plugin status failure response.",
-      "coverageLevel": "runtime",
-      "reproduction": "Build the DSH plugin in a temporary directory and make the host skill registry throw. At 9309a97a the registered status endpoint returns the fixture exception message in its HTTP 500 JSON.",
-      "expected": "Return HTTP 500 with the status schema, plugin version, and status-unavailable error code.",
-      "forbidden": "Return the underlying exception message or stack information in the status response.",
-      "rootCause": "The status route included the caught exception or its message directly in the JSON response.",
-      "tests": [
-        {
-          "file": "test/scripts/dsh-plugin-build.test.ts",
-          "namePattern": "^DeepSeek Harness plugin package builds an installable bundle whose Host half registers skills and serves the dashboard endpoints$",
-          "requiredNames": [
-            "DeepSeek Harness plugin package builds an installable bundle whose Host half registers skills and serves the dashboard endpoints"
-          ]
         }
       ]
     },
@@ -54989,6 +55122,74 @@
       ]
     },
     {
+      "id": "issue-565-openspec-2-shared-skills-root",
+      "behavior": "OpenSpec 2.x 只在共享的 .agents/skills 生成技能时，comet init 仍为 OpenCode、Cursor 等平台安装 openspec-* 技能。",
+      "sources": ["https://github.com/rpamis/comet/issues/565"],
+      "coverageLevel": "public-cli",
+      "reproduction": "用真实 OpenSpec 2.0.0 运行 comet init --scope project --platform opencode（或 cursor），旧代码以 OpenSpec generated no tool output for opencode: expected one of .opencode 失败并退出 1；新增单元测试在旧代码中同样返回 failed，公开 CLI 测试用模拟 OpenSpec 2.0.0 输出的 openspec 命令运行 comet init，旧代码同样退出 1。",
+      "expected": "comet init 退出 0 且状态为 complete，安装返回 installed，技能从 staging 的 .agents 复制到平台自身的技能目录（如 .opencode/skills、.cursor/skills），项目根目录不出现 .agents，.openspec-target 标记不被复制。",
+      "forbidden": "因平台目录缺失而拒绝 OpenSpec 2 的共享输出，把 .openspec-target 未列出该工具的共享 .agents 输出当作该平台的生成物（comet init 必须退出 1 且不安装 openspec-* 技能），在 staging 完全没有输出或只有 .openspec-target 标记时报告安装成功。",
+      "rootCause": "OpenSpec 2.0 把所有工具的项目技能统一写到 .agents/skills，只为 Claude 等少数工具额外生成平台目录；resolveGeneratedToolCopies 只在平台自身目录（及历史目录）中查找生成物。",
+      "tests": [
+        {
+          "file": "test/domains/integrations/openspec.test.ts",
+          "namePattern": "installs (opencode|cursor) OpenSpec Skills from the shared \\.agents staging output \\(OpenSpec 2\\)",
+          "requiredNames": [
+            "openspec installOpenSpec installs opencode OpenSpec Skills from the shared .agents staging output (OpenSpec 2)",
+            "openspec installOpenSpec installs cursor OpenSpec Skills from the shared .agents staging output (OpenSpec 2)"
+          ]
+        },
+        {
+          "file": "test/domains/integrations/openspec.test.ts",
+          "namePattern": "fails when OpenSpec stages no tool output for a requested platform",
+          "requiredNames": [
+            "openspec installOpenSpec fails when OpenSpec stages no tool output for a requested platform"
+          ]
+        },
+        {
+          "file": "test/domains/integrations/openspec.test.ts",
+          "namePattern": "does not use shared \\.agents Skills generated for another tool \\(OpenSpec 2\\)",
+          "requiredNames": [
+            "openspec installOpenSpec does not use shared .agents Skills generated for another tool (OpenSpec 2)"
+          ]
+        },
+        {
+          "file": "test/domains/integrations/openspec.test.ts",
+          "namePattern": "fails when the shared \\.agents output holds only the target marker \\(OpenSpec 2\\)",
+          "requiredNames": [
+            "openspec installOpenSpec fails when the shared .agents output holds only the target marker (OpenSpec 2)"
+          ]
+        },
+        {
+          "file": "test/app/openspec-2-init-cli.test.ts",
+          "namePattern": "installs OpenCode OpenSpec Skills from the shared \\.agents output through comet init|rejects shared \\.agents output that OpenSpec generated for another tool",
+          "requiredNames": [
+            "comet init with OpenSpec 2 shared .agents output installs OpenCode OpenSpec Skills from the shared .agents output through comet init",
+            "comet init with OpenSpec 2 shared .agents output rejects shared .agents output that OpenSpec generated for another tool"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "dsh-plugin-status-private-diagnostics",
+      "sources": ["https://github.com/poco0222/comet/security/code-scanning/10"],
+      "behavior": "Keep internal diagnostic text out of the DeepSeek Harness plugin status failure response.",
+      "coverageLevel": "runtime",
+      "reproduction": "Build the DSH plugin in a temporary directory and make the host skill registry throw. At 9309a97a the registered status endpoint returns the fixture exception message in its HTTP 500 JSON.",
+      "expected": "Return HTTP 500 with the status schema, plugin version, and status-unavailable error code.",
+      "forbidden": "Return the underlying exception message or stack information in the status response.",
+      "rootCause": "The status route included the caught exception or its message directly in the JSON response.",
+      "tests": [
+        {
+          "file": "test/scripts/dsh-plugin-build.test.ts",
+          "namePattern": "^DeepSeek Harness plugin package builds an installable bundle whose Host half registers skills and serves the dashboard endpoints$",
+          "requiredNames": [
+            "DeepSeek Harness plugin package builds an installable bundle whose Host half registers skills and serves the dashboard endpoints"
+          ]
+        }
+      ]
+    },
+    {
       "id": "native-group-non-git-coordinator",
       "sources": ["report:2026-11-10-native-multi-repository-workspace"],
       "behavior": "Create a coordinated task from a non-Git parent containing independent child repositories.",
@@ -56331,6 +56532,46 @@
           "namePattern": "^loadBundle rejects 'a non-text rule match' with an actionable field path$",
           "requiredNames": [
             "loadBundle rejects 'a non-text rule match' with an actionable field path"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "native-group-explicit-none-write-boundary",
+      "behavior": "协调目录的 --none 保留独立编辑，多仓任务和集成目录继续执行原有写入约束。",
+      "sources": ["report:2026-11-19-native-upstream-none-multi-repository"],
+      "coverageLevel": "public-cli",
+      "reproduction": "在未接入多仓归属检查的临时合并结果上运行生成的 select 命令，协调目录设置 --none 后从任务根再次设置 --none 会错误返回 0，覆盖任务选择。",
+      "expected": "未绑定会话可在协调目录编辑普通文件；已绑定会话的任务 Shape 检查、跨任务和原仓限制继续生效，任务根、子仓及集成目录拒绝 --none。",
+      "forbidden": "将协调目录的未选中状态应用到已绑定任务，或在任务工作区覆盖其选择并放开普通写入。",
+      "rootCause": "上游 --none 按当前工作区选择放行普通写入，原选择入口没有区分 fork 登记的多仓任务归属。",
+      "tests": [
+        {
+          "file": "test/domains/comet-entry/hook-workspace-group.test.ts",
+          "namePattern": "^(?:Comet Hook workspace groups keeps task writes guarded when the coordinator explicitly has no selection|Comet Hook workspace groups routes integration worktrees to their task and rejects foreign, aliased and damaged integration ownership)$",
+          "requiredNames": [
+            "Comet Hook workspace groups keeps task writes guarded when the coordinator explicitly has no selection",
+            "Comet Hook workspace groups routes integration worktrees to their task and rejects foreign, aliased and damaged integration ownership"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "native-group-failed-session-switch-keeps-selection",
+      "behavior": "多仓会话在旧任务有成员缺失且没有清理收据时切换失败，保留原会话绑定和目标工作区选择。",
+      "sources": ["report:2026-11-19-native-upstream-none-multi-repository"],
+      "coverageLevel": "public-cli",
+      "reproduction": "绑定任务 A，将 A 的活动子仓暂时移走，并在未修复的临时合并结果执行 select task-b --session；命令虽然失败，仍写入了原本不存在的任务 B 选择文件。",
+      "expected": "会话仍然绑定任务 A，任务 B 的原选择状态保持原样；合法的显式切换仍成功。",
+      "forbidden": "校验旧绑定失败后留下任务 B 的新选择，或者改变原会话绑定。",
+      "rootCause": "fork 在核对既有会话绑定和清理收据前先持久化目标工作区选择。",
+      "tests": [
+        {
+          "file": "test/domains/comet-entry/hook-workspace-group.test.ts",
+          "namePattern": "^(?:Comet Hook workspace groups does not switch away from a missing active member without a cleanup receipt|Comet Hook workspace groups keeps task writes guarded when the coordinator explicitly has no selection)$",
+          "requiredNames": [
+            "Comet Hook workspace groups does not switch away from a missing active member without a cleanup receipt",
+            "Comet Hook workspace groups keeps task writes guarded when the coordinator explicitly has no selection"
           ]
         }
       ]

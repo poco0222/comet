@@ -37,7 +37,7 @@ const HELP: Readonly<Record<string, NativeHelpEntry>> = Object.freeze({
       'spec sync <change-name> <capability> --input <json-file>  Audit local Markdown reference corrections.',
       'show <change-name>           Read formal artifacts and portable state.',
       'status [<change-name>]       Discover stable boundaries and Runner actions.',
-      'select <change-name>         Select a change in its bound workspace.',
+      'select <change-name>|--none  Select a change or explicitly leave this workspace unselected.',
       'next <change-name>           Confirm or recover a stable workflow boundary.',
       'archive <change-name>        Preview and execute Archive plus workspace finish.',
       'deliver <change-name>        Verify and apply local Git delivery for an archived multi-repository task.',
@@ -87,10 +87,11 @@ const HELP: Readonly<Record<string, NativeHelpEntry>> = Object.freeze({
   },
   new: {
     usage:
-      'comet native new <change-name> [--runtime compat|sdk] [--language en|zh-CN] [--task <text>] [--capability <id>] [--isolation current|branch|worktree] [--change-branch <branch>] [--target-branch <branch>] [--worktree-path <path>]',
-    purpose: 'Create a portable Native change and prepare the requested branch or linked worktree.',
+      'comet native new <change-name> [--runtime sdk] [--language en|zh-CN] [--task <text>] [--capability <id>] [--isolation current|branch|worktree] [--change-branch <branch>] [--target-branch <branch>] [--worktree-path <path>]',
+    purpose:
+      'Create an SDK-owned Native change and prepare the requested branch or linked worktree.',
     options: [
-      '--runtime compat|sdk        Runtime format for this new change; defaults to sdk.',
+      '--runtime sdk                New Native changes use the SDK. Continue an existing compat change by name.',
       '--language en|zh-CN          Artifact language; defaults to project configuration.',
       '--task <text>                Preserve the original request in the SDK Run for independent alignment review; also search Project Knowledge for a capability association.',
       '--capability <id>            Directly validate and associate an existing capability without retrieval.',
@@ -103,8 +104,7 @@ const HELP: Readonly<Record<string, NativeHelpEntry>> = Object.freeze({
       '--setup <json-file>          Select ignored local files and repeatable setup commands.',
       '--setup-report <json-file>   Report actual setup command results from the task workspace.',
     ],
-    output:
-      'The SDK Run or portable state, canonical artifact paths, and workspace preparation result; compat Runtime changes include the next Runner continuation.',
+    output: 'The SDK Run, canonical artifact paths, and workspace preparation result.',
     examples: [
       'comet native new session-timeout --language zh-CN',
       'comet native new add-sms-login --task "add SMS login to authentication"',
@@ -199,13 +199,15 @@ const HELP: Readonly<Record<string, NativeHelpEntry>> = Object.freeze({
       'Integration inputs, the next report or application command, and local delivery receipts.',
   },
   select: {
-    usage: 'comet native select <change-name> [--rebind | --session <actual-session>]',
+    usage:
+      'comet native select <change-name> [--rebind | --session <actual-session>]\n       comet native select --none',
     options: [
       '--rebind  Explicitly bind the same idle SDK Run to the current Git branch; preserve work and approvals, and reject unresolved executions.',
-      '--session <actual-session>  Switch this session to the selected multi-repository task.',
+      '--session <actual-session>  Switch the specified session to the selected multi-repository task.',
+      '--none  After the user chooses independent work, allow ordinary edits and stop ambient resume for this workspace. Workflow artifacts remain protected. Use outside registered multi-repository task and integration workspaces. Cannot combine with a name, --rebind, or --session.',
     ],
-    purpose: 'Select one Native change after validating its workspace binding.',
-    output: 'The selected change record.',
+    purpose: 'Select a Native change or explicitly leave the workspace unselected.',
+    output: 'The selected change record or an explicit workspace-level no selection.',
   },
   next: {
     usage:

@@ -327,7 +327,7 @@ Read all three repositories in one check.
       'next',
       'feature',
       '--result',
-      resultFile,
+      path.relative(coordinator, resultFile),
       '--action',
       run.actions.at(-1)!.id,
       '--session',

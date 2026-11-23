@@ -14,6 +14,8 @@ jobs:
     name: Reuse verified PR coverage
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    env:
+      CODECOV_CONFIGURED: ${{ secrets.CODECOV_TOKEN != '' }}
     steps:
       - name: Find the successful PR CI run
         id: source
@@ -72,7 +74,7 @@ jobs:
             exit 1
           fi
       - name: Publish the verified master coverage baseline
-        if: steps.source.outputs.run_id != ''
+        if: steps.source.outputs.run_id != '' && env.CODECOV_CONFIGURED == 'true'
         uses: codecov/codecov-action@fb8b3582c8e4def4969c97caa2f19720cb33a72f # v7.0.0
         with:
           token: ${{ secrets.CODECOV_TOKEN }}

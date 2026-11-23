@@ -213,9 +213,13 @@ describe('CI workflows', () => {
     );
     expect(matchTree).toBeGreaterThan(steps.indexOf(download));
     expect(matchTree).toBeLessThan(upload);
-    for (const step of [checkout, download, steps[matchTree], steps[upload]]) {
+    for (const step of [checkout, download, steps[matchTree]]) {
       expect(step.if).toBe("steps.source.outputs.run_id != ''");
     }
+    expect(workflow.jobs.publish.env.CODECOV_CONFIGURED).toBe("${{ secrets.CODECOV_TOKEN != '' }}");
+    expect(steps[upload].if).toBe(
+      "steps.source.outputs.run_id != '' && env.CODECOV_CONFIGURED == 'true'",
+    );
     expect(steps[matchTree].run).toContain("git rev-parse 'HEAD^{tree}'");
     expect(steps[matchTree].run).toContain('pr-revision');
     expect(steps[matchTree].run).toContain('exit 1');

@@ -10,7 +10,11 @@ import {
   type RuntimeValue,
   type WorkflowRun,
 } from '../engine/runtime.js';
-import { NATIVE_REQUEST_REVIEW_RESULTS, nativeEnumPlaceholder } from './native-input-enum.js';
+import {
+  NATIVE_REPORTED_CHECK_RESULTS,
+  NATIVE_REQUEST_REVIEW_RESULTS,
+  nativeEnumPlaceholder,
+} from './native-input-enum.js';
 import {
   nativePortableContinuation,
   type NativePortableContinuation,
@@ -21,6 +25,10 @@ import {
   type NativePortableState,
 } from './native-portable-types.js';
 import { nativeRecoveryForContinuation } from './native-recovery.js';
+import {
+  nativeSdkReportedCheckView,
+  projectNativeSdkAcceptanceEvidence,
+} from './native-sdk-acceptance-evidence.js';
 import {
   NATIVE_SDK_ARCHIVE_STEPS,
   nativeSdkRetryableArchiveFinalization,
@@ -131,7 +139,11 @@ function nativeSdkOutcomeOutput(
       addressedAcceptanceIds: state.acceptance.map(({ id }) => id),
 
       checks: [
-        { name: '<check-name>', result: '<passed|failed|not-run>', note: '<actual-result>' },
+        {
+          name: '<check-name>',
+          result: nativeEnumPlaceholder(NATIVE_REPORTED_CHECK_RESULTS),
+          note: '<actual-result>',
+        },
       ],
       knownLimits: ['<actual-limit-or-remove-entry>'],
 
@@ -143,11 +155,7 @@ function nativeSdkOutcomeOutput(
   if (action.stepId === 'verify.verifier')
     return {
       ...{
-        checks: (state.builder_handoff?.checks ?? []).map((check) => ({
-          name: check.name.text,
-          result: check.result,
-          note: check.note?.text ?? null,
-        })),
+        checks: (state.builder_handoff?.checks ?? []).map(nativeSdkReportedCheckView),
       },
       candidateId: state.builder_handoff?.candidate_id ?? null,
       verifierExecutionRef: action.claim?.sessionId ?? '<actual-session-id>',
@@ -352,6 +360,7 @@ export async function projectNativeSdkDispatchResult(options: {
               ? {
                   contextRequest: {
                     phase: contextRequest.phase,
+                    ...(contextRequest.operation ? { operation: contextRequest.operation } : {}),
                     ...('task' in contextRequest ? { task: contextRequest.task } : {}),
                     contextMode: contextRequest.contextMode,
                     commandArgs: contextRequest.commandArgs,
@@ -370,6 +379,14 @@ export async function projectNativeSdkDispatchResult(options: {
     (current) => current.id === action.id && 'contextRequest' in current,
   );
   const contextRequest = activeActions?.find((current) => current.id === action.id)?.contextRequest;
+  const verifier = ['verify.verifier', 'supervisor.child.verifier'].includes(action.stepId);
+  const builder = [
+    'build.builder',
+    'supervisor.parent.builder',
+    'supervisor.child.builder',
+  ].includes(action.stepId);
+  const child = (action.input as { activation?: { child?: string } }).activation?.child;
+  const evidenceInstructions = nativeSdkEvidenceInstruction(state.language, verifier);
   return {
     schema: 'comet.native.dispatch-result.v1' as const,
     runId: run.runId,
@@ -403,6 +420,17 @@ export async function projectNativeSdkDispatchResult(options: {
         }
       : {}),
     ...(contextRequest ? { contextRequest } : {}),
+    ...(builder || verifier ? { acceptanceEvidenceInstruction: evidenceInstructions } : {}),
+    ...(verifier && ['pending', 'running', 'unknown'].includes(action.status)
+      ? {
+          acceptanceEvidence: projectNativeSdkAcceptanceEvidence(
+            run,
+            state,
+            options.projectRoot,
+            child,
+          ),
+        }
+      : {}),
     state,
     action,
     ...projection,
@@ -424,6 +452,19 @@ export async function projectNativeSdkDispatchResult(options: {
       request: { operation: 'inspect', runId: run.runId },
     },
   };
+}
+
+export function nativeSdkEvidenceInstruction(
+  language: NativePortableState['language'],
+  verifier: boolean,
+): string {
+  if (verifier)
+    return language === 'zh-CN'
+      ? '独立核对每条验收项。用 checks[].acceptanceIds 关联实际检查，新增或重跑的检查在 checks[].reason 说明原因。结果不明、超时和未运行可分别记录 unknown、timeout、not-run。'
+      : 'Independently assess every criterion. Link observed checks using checks[].acceptanceIds. For added or repeated checks state why in checks[].reason. Record unknown, timeout, and not-run when applicable.';
+  return language === 'zh-CN'
+    ? '用 checks[].acceptanceIds 将实际检查关联到验收项。填写可选的 acceptanceReview 时，记录范围内各项的 id、status、evidence、note。'
+    : 'Link actual checks using checks[].acceptanceIds. When supplying optional acceptanceReview, use id, status, evidence, and note for each criterion in scope.';
 }
 function sdkShapeContinuation(
   state: NativePortableState,
@@ -702,9 +743,17 @@ export function nativeSdkActionContextRequest(
   } | null;
   const scope = input?.activation ?? input;
   const worktree = scope?.worktree;
+  const verifying = action.ref?.includes('verifier');
+  const editing = [
+    'build.builder',
+    'supervisor.child.builder',
+    'supervisor.child.integration-repair',
+    'supervisor.parent.builder',
+  ].includes(action.stepId);
   return nativeTaskContextRequest({
     name: state.name,
-    phase: action.ref?.includes('verifier') ? 'verify' : 'build',
+    phase: verifying ? 'verify' : 'build',
+    operation: verifying ? 'verify' : editing ? 'edit' : undefined,
     language: state.language,
     projectRoot: typeof worktree === 'string' ? worktree : projectRoot,
     sessionId: action.claim?.sessionId,

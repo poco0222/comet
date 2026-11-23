@@ -309,7 +309,12 @@ Read all three repositories in one check.
     const checked = spawnSync(process.execPath, ['check.cjs'], { cwd: root, encoding: 'utf8' });
     expect(checked.status, checked.stderr).toBe(0);
     const checks = [
-      { name: checkName, result: 'passed', note: 'node check.cjs passed in the task workspace' },
+      {
+        name: checkName,
+        result: 'passed',
+        note: 'node check.cjs passed in the task workspace',
+        acceptanceIds: ['A1'],
+      },
     ];
     await fs.writeFile(
       resultFile,
@@ -340,7 +345,23 @@ Read all three repositories in one check.
     expect(verifier.resultTemplate?.output.deliveryTreeBinding).toMatch(/^[0-9a-f]{64}$/u);
     run = await runtime.inspect('feature');
     const state = parseNativePortableState(run.state);
+    const expectedEvidence = {
+      runId,
+      candidateId: state.builder_handoff!.candidate_id,
+      items: [
+        {
+          id: 'A1',
+          result: 'pending',
+          gap: null,
+          checks: [{ stage: 'build', ...checks[0] }],
+        },
+      ],
+    };
+    expect(verifier).toMatchObject({
+      task: { readOnly: true, acceptanceEvidence: expectedEvidence },
+    });
     const verifyStatus = await invoke('status', 'feature', '--details');
+    expect(verifyStatus.dispatch.data).toMatchObject({ acceptanceEvidence: expectedEvidence });
     const active = (
       verifyStatus.dispatch.data as {
         activeActions: Array<{ stepId: string; resultRequest: unknown }>;
@@ -405,6 +426,22 @@ Read all three repositories in one check.
     const reported = await ok(...verifierArgs);
     await fs.rm(path.join(root, 'frontend/.codegraph'), { recursive: true });
     expect(reported.status).toBe('await-user');
+    expect(await ok('status', 'feature')).toMatchObject({
+      acceptanceEvidence: {
+        candidateId: state.builder_handoff!.candidate_id,
+        items: [
+          {
+            id: 'A1',
+            result: 'passed',
+            gap: null,
+            checks: [
+              { stage: 'build', ...checks[0] },
+              { stage: 'verify', ...checks[0] },
+            ],
+          },
+        ],
+      },
+    });
     expect((await invoke('deliver', 'feature')).output.exitCode).not.toBe(0);
     const acceptanceArgs = [...reported.next.commandArgs].slice(2);
     acceptanceArgs[acceptanceArgs.indexOf('--summary') + 1] =

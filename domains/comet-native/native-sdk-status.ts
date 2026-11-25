@@ -95,6 +95,7 @@ async function projectNativeSdkStatusOnce(
     projectRoot: string;
     name: string;
     details?: boolean;
+    portableArchiveRef?: string;
   },
   {
     run,
@@ -108,13 +109,14 @@ async function projectNativeSdkStatusOnce(
     projectRoot: options.projectRoot,
     run,
   });
-  const workspaceGroup = state.workspace.group_hash
-    ? await readNativeWorkspaceGroup(options.projectRoot)
-    : null;
+  const workspaceGroup =
+    state.workspace.group_hash && !options.portableArchiveRef
+      ? await readNativeWorkspaceGroup(options.projectRoot)
+      : null;
   const actions = statusRecords(run.actions, options.details);
   const waits = statusRecords(run.waits, options.details);
   const evidenceWaits = statusRecords(run.evidenceWaits ?? [], options.details);
-  const preservedReports = run.actions.flatMap((action) => {
+  const preservedReports = (options.portableArchiveRef ? [] : run.actions).flatMap((action) => {
     const output = action.outcome?.output as
       | {
           preservedReportRef?: unknown;
@@ -144,21 +146,28 @@ async function projectNativeSdkStatusOnce(
   });
   const reportWarning = await nativeSdkArchivedReportWarning(options.projectRoot, run);
   const children = nativeSdkAcceptanceEvidenceChildren(run, state);
+  const workspace = projectNativePortableWorkspace({ projectRoot: options.projectRoot }, state);
   return {
     schema: 'comet.native.sdk-status.v1' as const,
-    diagnostics: await inspectNativeSdkRunDiagnostics(options.projectRoot, run, {}),
+    diagnostics: await inspectNativeSdkRunDiagnostics(options.projectRoot, run, {
+      portableArchive: Boolean(options.portableArchiveRef),
+    }),
     runtimeFormat: 'sdk' as const,
     ...(application
       ? { application: application.identity, skillWork: applicationSkillWork(application, run) }
       : {}),
     name: options.name,
-    preservedReportsDirectory: {
-      ref: nativeSdkPreservedReportsRef(run.runId),
-      path: path.join(
-        resolveWorkspaceRuntimeRootSync(options.projectRoot),
-        nativeSdkPreservedReportsRef(run.runId),
-      ),
-    },
+    ...(options.portableArchiveRef
+      ? { archived: true, archiveRef: options.portableArchiveRef }
+      : {
+          preservedReportsDirectory: {
+            ref: nativeSdkPreservedReportsRef(run.runId),
+            path: path.join(
+              resolveWorkspaceRuntimeRootSync(options.projectRoot),
+              nativeSdkPreservedReportsRef(run.runId),
+            ),
+          },
+        }),
     ...(preservedReports.length ? { preservedReports } : {}),
     ...(reportWarning ? { warning: reportWarning } : {}),
     language: state.language,
@@ -182,22 +191,24 @@ async function projectNativeSdkStatusOnce(
     verificationResult: state.verification_result,
     candidateId: state.builder_handoff?.candidate_id ?? null,
     blockers: summary.blockers,
-    workspace: {
-      ...projectNativePortableWorkspace({ projectRoot: options.projectRoot }, state),
-      ...(workspaceGroup
-        ? {
-            coordinatorRoot: workspaceGroup.plan.coordinatorRoot,
-            delivery: await inspectNativeWorkspaceGroupDelivery(workspaceGroup),
-            planHash: workspaceGroup.plan.hash,
-            repositories: workspaceGroup.plan.repositories.map((entry) => ({
-              path: entry.path,
-              cwd: entry.worktreeRoot,
-              changeBranch: entry.changeBranch,
-              targetBranch: entry.targetBranch,
-            })),
-          }
-        : {}),
-    },
+    workspace: options.portableArchiveRef
+      ? { ...workspace, bindingState: 'aligned' as const, message: null }
+      : {
+          ...workspace,
+          ...(workspaceGroup
+            ? {
+                coordinatorRoot: workspaceGroup.plan.coordinatorRoot,
+                delivery: await inspectNativeWorkspaceGroupDelivery(workspaceGroup),
+                planHash: workspaceGroup.plan.hash,
+                repositories: workspaceGroup.plan.repositories.map((entry) => ({
+                  path: entry.path,
+                  cwd: entry.worktreeRoot,
+                  changeBranch: entry.changeBranch,
+                  targetBranch: entry.targetBranch,
+                })),
+              }
+            : {}),
+        },
     run: {
       id: run.runId,
       revision: run.revision,

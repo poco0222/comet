@@ -67,7 +67,12 @@ it.each(['source', 'bundle', ...(packageRoot ? ['package'] : [])])(
       runGitCommand(root, ['commit', '-m', 'initial']);
       await fs.writeFile(path.join(root, '.env'), 'local-fixture-config');
     }
-    await writeProjectConfig(coordinator, { ...defaultProjectConfig('docs', 'en'), repositories });
+    const config = defaultProjectConfig('docs', 'en');
+    await writeProjectConfig(coordinator, {
+      ...config,
+      native: { ...config.native, archive_confirmation: 'required' },
+      repositories,
+    });
     const sharedSpecs = path.join(coordinator, 'docs/comet/specs');
     await fs.mkdir(path.join(sharedSpecs, 'existing'), { recursive: true });
     await fs.writeFile(

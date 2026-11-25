@@ -805,6 +805,47 @@ describe('Native workspace group creation', () => {
     );
     expect(resumed.output.exitCode, resumed.output.stdout).toBe(0);
     expect(resumed.dispatch.executionCwd).toBe(plan.projectRoot);
+
+    const claimed = await invoke('next', 'cli-a', '--session', 'coordinator-session');
+    expect(claimed.output.exitCode, claimed.output.stdout).toBe(0);
+    const { task } = claimed.dispatch.data as { task: { actionId: string } };
+    await fs.writeFile(
+      path.join(plan.projectRoot, 'docs/comet/changes/cli-a/brief.md'),
+      '# Outcome\nAccept stdin results.\n# Scope\nCLI.\n# Non-goals\nNone.\n# Acceptance examples\n- Preserve the pending decision.\n',
+    );
+    const returned = spawnSync(
+      process.execPath,
+      [
+        path.resolve(
+          process.env.COMET_TEST_PACKAGE_ROOT ?? '.',
+          'assets/skills/comet-native/scripts/comet-native-next.mjs',
+        ),
+        'cli-a',
+        '--action',
+        task.actionId,
+        '--session',
+        'coordinator-session',
+        '--result',
+        '-',
+        '--project-root',
+        projectRoot,
+        '--json',
+      ],
+      {
+        cwd: projectRoot,
+        encoding: 'utf8',
+        input: JSON.stringify({
+          status: 'succeeded',
+          output: { acceptance: [{ source: 'brief.md', text: 'Preserve the pending decision.' }] },
+        }),
+        timeout: 30_000,
+      },
+    );
+    expect(returned.status, returned.stdout + returned.stderr).toBe(0);
+    const waiting = await invoke('status', 'cli-a');
+    expect(waiting.dispatch.data).toMatchObject({
+      run: { waits: [expect.objectContaining({ stepId: 'shape.confirm', status: 'pending' })] },
+    });
   });
 
   it('creates a current change from a registered coordinator alongside an isolated task', async () => {
